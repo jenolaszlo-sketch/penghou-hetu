@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Penghou.Hetu.Abstractions/Penghou.Hetu.Abstractions.csproj" />
+    <Project Path="src/Penghou.Hetu.CSharp/Penghou.Hetu.CSharp.csproj" />
+    <Project Path="src/Penghou.Hetu.Ladybug/Penghou.Hetu.Ladybug.csproj" />
+    <Project Path="src/Penghou.Hetu.Testing/Penghou.Hetu.Testing.csproj" />
+    <Project Path="src/Penghou.Hetu/Penghou.Hetu.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Penghou.Hetu.CSharp.Tests/Penghou.Hetu.CSharp.Tests.csproj" />
+    <Project Path="tests/Penghou.Hetu.Ladybug.Tests/Penghou.Hetu.Ladybug.Tests.csproj" />
+    <Project Path="tests/Penghou.Hetu.Tests/Penghou.Hetu.Tests.csproj" />
+  </Folder>
+</Solution>

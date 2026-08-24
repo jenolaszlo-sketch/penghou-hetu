@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>Penghou.Hetu.Abstractions</PackageId>
+    <Title>Penghou Hetu Abstractions</Title>
+    <Authors>Penghou.Hetu contributors</Authors>
+    <Description>Parser-independent code graph vocabulary and extraction contracts for .NET.</Description>
+    <PackageTags>code-analysis;knowledge-graph;repository;agents;static-analysis</PackageTags>
+    <RepositoryUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsPackable>true</IsPackable>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
