@@ -6,7 +6,7 @@ namespace Penghou.Hetu;
 /// </summary>
 public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
 {
-    private readonly ICodeGraphStore _store;
+    private readonly ICodeGraphIndexStore _store;
     private readonly CodeGraphBatchValidator _validator;
     private readonly Action<CodeGraphIngestionDiagnostics>? _onCompleted;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -15,7 +15,7 @@ public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
     private bool _disposed;
 
     public CodeGraphIngestionSink(
-        ICodeGraphStore store,
+        ICodeGraphIndexStore store,
         CodeGraphBatchLimits? limits = null,
         CodeGraphBatchValidator? validator = null,
         Action<CodeGraphIngestionDiagnostics>? onCompleted = null)
@@ -96,7 +96,7 @@ public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
             var replacement = pending.ToReplacement();
             try
             {
-                await _store.ReplaceIndexUnitAsync(replacement, cancellationToken)
+                await _store.StageIndexUnitAsync(replacement, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch

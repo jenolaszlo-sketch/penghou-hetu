@@ -42,7 +42,7 @@ public static class CodeGraphStoreConformanceSuite
         checks.Add("index-run-idempotent-start");
 
         await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>
-            await store.ReplaceIndexUnitAsync(
+            await store.StageIndexUnitAsync(
                 Replacement(
                     repositoryId,
                     runId,
@@ -78,28 +78,84 @@ public static class CodeGraphStoreConformanceSuite
             [shared, secondOnly],
             [secondDeclaration]);
 
-        await store.ReplaceIndexUnitAsync(first, cancellationToken)
+        await store.StageIndexUnitAsync(first, cancellationToken)
             .ConfigureAwait(false);
-        await store.ReplaceIndexUnitAsync(first, cancellationToken)
+        await store.StageIndexUnitAsync(first, cancellationToken)
             .ConfigureAwait(false);
         Require(
             (await store.GetDeclarationsAsync(
                 repositoryId,
                 shared.SymbolId!,
-                cancellationToken).ConfigureAwait(false)).Count == 1,
-            "equivalent replacement must be idempotent");
+                cancellationToken).ConfigureAwait(false)).Count == 0,
+            "staged replacements must not be query-visible");
+        checks.Add("staged-replacement-invisible");
         checks.Add("equivalent-replacement-idempotent");
 
-        await store.ReplaceIndexUnitAsync(second, cancellationToken)
+        await store.StageIndexUnitAsync(second, cancellationToken)
             .ConfigureAwait(false);
+        var initialCompleted = new CodeIndexRunManifest(
+            repositoryId,
+            runId,
+            startedAt,
+            CodeIndexRunStatus.Completed,
+            startedAt.AddSeconds(1),
+            [pluginId]);
+        await store.CompleteIndexRunAsync(
+            initialCompleted,
+            new CodeRepositoryIndexState(repositoryId, runId, []),
+            cancellationToken).ConfigureAwait(false);
         Require(
             (await store.GetDeclarationsAsync(
                 repositoryId,
                 shared.SymbolId!,
                 cancellationToken).ConfigureAwait(false)).Count == 2,
             "partial symbol declarations must coexist");
-        await store.DeleteIndexUnitAsync(
+        checks.Add("atomic-publication-makes-staged-facts-visible");
+        var sharedEnvelope = await store.FindNodesByQualifiedNameWithProvenanceAsync(
             repositoryId,
+            shared.QualifiedName!,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            sharedEnvelope is not null &&
+            sharedEnvelope.Publication.IndexRunId == runId &&
+            sharedEnvelope.Query.Operation == "qualified-name" &&
+            sharedEnvelope.Result.Count == 1,
+            "qualified-name provenance must identify its publication and applied query");
+        var sharedProvenance = sharedEnvelope!.Provenance.Single(value =>
+            value.Kind == CodeGraphFactKind.Node && value.FactId == shared.Id.Value);
+        Require(
+            sharedProvenance.Contributors.Count == 2 &&
+            sharedProvenance.Contributors.Select(origin => origin.IndexUnitId)
+                .ToHashSet().SetEquals([first.Origin.IndexUnitId, second.Origin.IndexUnitId]),
+            "shared facts must retain every contributing index-unit origin");
+        checks.Add("published-query-provenance");
+        checks.Add("shared-fact-multiple-contributors");
+        var declarationEnvelope = await store.GetDeclarationsWithProvenanceAsync(
+            repositoryId,
+            shared.SymbolId!,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            declarationEnvelope is not null &&
+            declarationEnvelope.Result.Count == 2 &&
+            declarationEnvelope.Provenance.Count == 2 &&
+            declarationEnvelope.Provenance.All(value =>
+                value.Kind == CodeGraphFactKind.Declaration &&
+                value.Contributors.Count == 1),
+            "declaration queries must trace every returned declaration");
+        checks.Add("declaration-provenance");
+
+        var updateRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        var updateStartedAt = startedAt.AddSeconds(2);
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                updateRunId,
+                updateStartedAt,
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.StageIndexUnitDeletionAsync(
+            repositoryId,
+            updateRunId,
             pluginId,
             first.Origin.IndexUnitId,
             cancellationToken).ConfigureAwait(false);
@@ -109,23 +165,21 @@ public static class CodeGraphStoreConformanceSuite
             "shared semantic node must survive one contribution removal");
         Require(
             await store.GetNodeAsync(repositoryId, firstOnly.Id, cancellationToken)
-                .ConfigureAwait(false) is null,
-            "unit-owned node must be removed");
+                .ConfigureAwait(false) is not null,
+            "staged deletion must not be visible before publication");
         Require(
             await store.GetNodeAsync(repositoryId, secondOnly.Id, cancellationToken)
                 .ConfigureAwait(false) is not null,
             "unrelated unit facts must survive deletion");
-        checks.Add("owned-deletion-and-shared-node-survival");
-
         var beforeFailure = await store.GetNodeAsync(
             repositoryId,
             secondOnly.Id,
             cancellationToken).ConfigureAwait(false);
         await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>
-            await store.ReplaceIndexUnitAsync(
+            await store.StageIndexUnitAsync(
                 Replacement(
                     repositoryId,
-                    runId,
+                    updateRunId,
                     pluginId,
                     "unit:second",
                     [secondOnly],
@@ -147,8 +201,9 @@ public static class CodeGraphStoreConformanceSuite
         {
             source.Cancel();
             await RequireThrowsAsync<OperationCanceledException>(async () =>
-                await store.DeleteIndexUnitAsync(
+                await store.StageIndexUnitDeletionAsync(
                     repositoryId,
+                    updateRunId,
                     pluginId,
                     second.Origin.IndexUnitId,
                     source.Token).ConfigureAwait(false));
@@ -166,10 +221,10 @@ public static class CodeGraphStoreConformanceSuite
             Node("c", "Example.C"),
             Node("d", "Example.D")
         };
-        await store.ReplaceIndexUnitAsync(
+        await store.StageIndexUnitAsync(
             Replacement(
                 repositoryId,
-                runId,
+                updateRunId,
                 pluginId,
                 "unit:traversal",
                 traversalNodes,
@@ -181,6 +236,21 @@ public static class CodeGraphStoreConformanceSuite
                     Edge("ca", traversalNodes[2].Id, traversalNodes[0].Id)
                 ]),
             cancellationToken).ConfigureAwait(false);
+        var completed = new CodeIndexRunManifest(
+            repositoryId,
+            updateRunId,
+            updateStartedAt,
+            CodeIndexRunStatus.Completed,
+            updateStartedAt.AddSeconds(1),
+            [pluginId]);
+        var indexState = new CodeRepositoryIndexState(
+            repositoryId,
+            updateRunId,
+            [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+            "snapshot:conformance",
+            true);
+        await store.CompleteIndexRunAsync(completed, indexState, cancellationToken)
+            .ConfigureAwait(false);
         var bounded = await store.TraverseAsync(
             repositoryId,
             new CodeGraphTraversalQuery(
@@ -190,6 +260,12 @@ public static class CodeGraphStoreConformanceSuite
                 maxEdges: 3),
             cancellationToken).ConfigureAwait(false);
         Require(bounded.Truncated, "bounded traversal must report truncation");
+        Require(
+            bounded.TruncationReason != CodeGraphTruncationReason.None &&
+            bounded.NodesExamined > 0 &&
+            bounded.EdgesExamined > 0 &&
+            bounded.DepthReached >= 0,
+            "bounded traversal must explain truncation and report examined counts");
         Require(bounded.Nodes.Count == 3, "bounded traversal node limit");
         Require(bounded.Edges.Count <= 3, "bounded traversal edge limit");
         var boundedNodeIds = bounded.Nodes
@@ -213,27 +289,35 @@ public static class CodeGraphStoreConformanceSuite
                 .SequenceEqual(repeated.Nodes.Select(node => node.Id.Value)),
             "traversal ordering must be deterministic");
         checks.Add("bounded-deterministic-traversal");
+        checks.Add("traversal-truncation-diagnostics");
+        var traversalEnvelope = await store.TraverseWithProvenanceAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                maxDepth: 5,
+                maxNodes: 3,
+                maxEdges: 3),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            traversalEnvelope is not null &&
+            traversalEnvelope.Publication.IndexRunId == updateRunId &&
+            traversalEnvelope.Query.Traversal is not null &&
+            traversalEnvelope.Provenance.Count ==
+                traversalEnvelope.Result.Nodes.Count + traversalEnvelope.Result.Edges.Count &&
+            traversalEnvelope.Provenance.All(value => value.Contributors.Count > 0),
+            "traversal provenance must cover every returned node and edge");
+        checks.Add("bounded-traversal-provenance");
 
-        var completed = new CodeIndexRunManifest(
-            repositoryId,
-            runId,
-            startedAt,
-            CodeIndexRunStatus.Completed,
-            startedAt.AddSeconds(1),
-            [pluginId]);
-        var indexState = new CodeRepositoryIndexState(
-            repositoryId,
-            runId,
-            [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
-            "snapshot:conformance",
-            true);
-        await store.CompleteIndexRunAsync(completed, indexState, cancellationToken)
-            .ConfigureAwait(false);
+        Require(
+            await store.GetNodeAsync(repositoryId, firstOnly.Id, cancellationToken)
+                .ConfigureAwait(false) is null,
+            "published deletion must remove unit-owned facts");
+        checks.Add("owned-deletion-and-shared-node-survival");
         await store.CompleteIndexRunAsync(
             completed,
             new CodeRepositoryIndexState(
                 repositoryId,
-                runId,
+                updateRunId,
                 [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
                 "snapshot:conformance",
                 true),
@@ -241,7 +325,7 @@ public static class CodeGraphStoreConformanceSuite
             .ConfigureAwait(false);
         Require(
             RunsEquivalent(
-                await store.GetIndexRunAsync(repositoryId, runId, cancellationToken)
+                await store.GetIndexRunAsync(repositoryId, updateRunId, cancellationToken)
                     .ConfigureAwait(false),
                 completed),
             "index run transition and round-trip");
@@ -251,7 +335,7 @@ public static class CodeGraphStoreConformanceSuite
             cancellationToken).ConfigureAwait(false);
         Require(
             restoredState is not null &&
-            restoredState.IndexRunId == runId &&
+            restoredState.IndexRunId == updateRunId &&
             restoredState.SnapshotIdentity == "snapshot:conformance" &&
             restoredState.IsConsistentSnapshot &&
             restoredState.Sources.Count == 1 &&
@@ -267,6 +351,15 @@ public static class CodeGraphStoreConformanceSuite
             plugins: [pluginId]);
         await store.StoreIndexRunAsync(failedRunning, cancellationToken)
             .ConfigureAwait(false);
+        var failedNode = Node("failed-stage", "Example.FailedStage");
+        await store.StageIndexUnitAsync(
+            Replacement(
+                repositoryId,
+                failedRunId,
+                pluginId,
+                "unit:failed-stage",
+                [failedNode]),
+            cancellationToken).ConfigureAwait(false);
         await store.StoreIndexRunAsync(
             new CodeIndexRunManifest(
                 repositoryId,
@@ -280,12 +373,53 @@ public static class CodeGraphStoreConformanceSuite
             repositoryId,
             cancellationToken).ConfigureAwait(false);
         Require(
-            stateAfterFailure?.IndexRunId == runId,
+            stateAfterFailure?.IndexRunId == updateRunId,
             "failed runs must retain the last successful source state");
+        Require(
+            await store.GetNodeAsync(repositoryId, failedNode.Id, cancellationToken)
+                .ConfigureAwait(false) is null,
+            "failed runs must discard staged graph changes");
         checks.Add("failed-run-retains-source-state");
+        checks.Add("failed-run-discards-staged-graph");
+
+        var cancelledRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        var cancelledRunning = new CodeIndexRunManifest(
+            repositoryId,
+            cancelledRunId,
+            startedAt.AddSeconds(4),
+            plugins: [pluginId]);
+        var cancelledNode = Node("cancelled-stage", "Example.CancelledStage");
+        await store.StoreIndexRunAsync(cancelledRunning, cancellationToken)
+            .ConfigureAwait(false);
+        await store.StageIndexUnitAsync(
+            Replacement(
+                repositoryId,
+                cancelledRunId,
+                pluginId,
+                "unit:cancelled-stage",
+                [cancelledNode]),
+            cancellationToken).ConfigureAwait(false);
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                cancelledRunId,
+                cancelledRunning.StartedAt,
+                CodeIndexRunStatus.Cancelled,
+                cancelledRunning.StartedAt.AddSeconds(1),
+                [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            await store.GetNodeAsync(repositoryId, cancelledNode.Id, cancellationToken)
+                .ConfigureAwait(false) is null,
+            "cancelled runs must discard staged graph changes");
+        Require(
+            (await store.GetLatestIndexStateAsync(repositoryId, cancellationToken)
+                .ConfigureAwait(false))?.IndexRunId == updateRunId,
+            "cancelled runs must retain the last successful source state");
+        checks.Add("cancelled-run-discards-staged-graph");
 
         await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>
-            await store.ReplaceIndexUnitAsync(
+            await store.StageIndexUnitAsync(
                 Replacement(
                     repositoryId,
                     runId,

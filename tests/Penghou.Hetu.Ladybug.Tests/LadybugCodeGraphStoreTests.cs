@@ -91,7 +91,7 @@ public sealed class LadybugCodeGraphStoreTests
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
-                await first.ReplaceIndexUnitAsync(new(
+                await first.StageIndexUnitAsync(new(
                     new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:durable")),
                     [node]));
                 await first.CompleteIndexRunAsync(
@@ -109,6 +109,44 @@ public sealed class LadybugCodeGraphStoreTests
             Assert.Equal(CodeIndexRunStatus.Completed, (await reopened.GetIndexRunAsync(repositoryId, runId))!.Status);
             Assert.Equal(runId, (await reopened.GetLatestIndexStateAsync(repositoryId))!.IndexRunId);
             Assert.Equal(1, reopened.CheckHealth().IndexUnitCount);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Store_ReopensStagedRunWithoutPublishingItAndCanResumePublication()
+    {
+        var path = TemporaryDatabasePath();
+        EnsureNativeRuntime(path);
+        var repositoryId = new CodeRepositoryId("repo:staged-reopen");
+        var runId = new CodeIndexRunId("run:staged-reopen");
+        var pluginId = new CodePluginId("plugin:staged-reopen");
+        var node = new CodeGraphNode(
+            new("node:staged-reopen"),
+            CodeNodeKinds.Type,
+            "StagedReopen");
+        var started = DateTimeOffset.UtcNow;
+        try
+        {
+            using (var first = new LadybugCodeGraphStore(path))
+            {
+                await first.UpsertRepositoryAsync(new(repositoryId));
+                await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+                await first.StageIndexUnitAsync(new(
+                    new(repositoryId, pluginId, "1.0.0", runId, new("unit:staged-reopen")),
+                    [node]));
+                Assert.Null(await first.GetNodeAsync(repositoryId, node.Id));
+            }
+
+            using var reopened = new LadybugCodeGraphStore(path);
+            Assert.Null(await reopened.GetNodeAsync(repositoryId, node.Id));
+            await reopened.CompleteIndexRunAsync(
+                new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+                new(repositoryId, runId, []));
+            Assert.NotNull(await reopened.GetNodeAsync(repositoryId, node.Id));
         }
         finally
         {
@@ -170,6 +208,7 @@ public sealed class LadybugCodeGraphStoreTests
         EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:rollback");
         var runId = new CodeIndexRunId("run:rollback");
+        var updateRunId = new CodeIndexRunId("run:rollback:update");
         var pluginId = new CodePluginId("plugin:rollback");
         var started = DateTimeOffset.UtcNow;
         var prior = new CodeGraphNode(new("node:prior"), CodeNodeKinds.Type, "Prior");
@@ -180,18 +219,39 @@ public sealed class LadybugCodeGraphStoreTests
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
-                await first.ReplaceIndexUnitAsync(Unit([prior]));
+                await first.StageIndexUnitAsync(Unit(runId, [prior]));
+                await first.CompleteIndexRunAsync(
+                    new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+                    new(repositoryId, runId, []));
+                await first.StoreIndexRunAsync(new(
+                    repositoryId,
+                    updateRunId,
+                    started.AddSeconds(2),
+                    plugins: [pluginId]));
             }
+            var failCommit = false;
             using (var interrupted = new LadybugCodeGraphStore(
                        path,
                        point =>
                        {
-                           if (point == "before-commit")
+                           if (failCommit && point == "before-commit")
                                throw new InjectedPersistenceException();
                        }))
             {
+                await interrupted.StageIndexUnitAsync(Unit(updateRunId, [replacement]));
+                Assert.NotNull(await interrupted.GetNodeAsync(repositoryId, prior.Id));
+                Assert.Null(await interrupted.GetNodeAsync(repositoryId, replacement.Id));
+                failCommit = true;
                 await Assert.ThrowsAsync<InjectedPersistenceException>(async () =>
-                    await interrupted.ReplaceIndexUnitAsync(Unit([replacement])));
+                    await interrupted.CompleteIndexRunAsync(
+                        new(
+                            repositoryId,
+                            updateRunId,
+                            started.AddSeconds(2),
+                            CodeIndexRunStatus.Completed,
+                            started.AddSeconds(3),
+                            [pluginId]),
+                        new(repositoryId, updateRunId, [])));
             }
 
             using var reopened = new LadybugCodeGraphStore(path);
@@ -203,8 +263,10 @@ public sealed class LadybugCodeGraphStoreTests
             DeleteDatabase(path);
         }
 
-        CodeIndexUnitReplacement Unit(IReadOnlyList<CodeGraphNode> nodes) => new(
-            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:rollback")),
+        CodeIndexUnitReplacement Unit(
+            CodeIndexRunId ownerRunId,
+            IReadOnlyList<CodeGraphNode> nodes) => new(
+            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", ownerRunId, new("unit:rollback")),
             nodes);
     }
 

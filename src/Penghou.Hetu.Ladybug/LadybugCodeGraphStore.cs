@@ -7,7 +7,7 @@ namespace Penghou.Hetu;
 /// <summary>Durable embedded Hetu store backed by LadybugDB.</summary>
 public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     private readonly Database _database;
     private readonly Connection _connection;
@@ -50,14 +50,65 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
     public ValueTask<CodeRepositoryIndexState?> GetLatestIndexStateAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
         _inner.GetLatestIndexStateAsync(repositoryId, cancellationToken);
 
-    public ValueTask ReplaceIndexUnitAsync(CodeIndexUnitReplacement replacement, CancellationToken cancellationToken = default) =>
-        MutateAsync(new("replace", Replacement: replacement), cancellationToken);
+    public ValueTask StageIndexUnitAsync(CodeIndexUnitReplacement replacement, CancellationToken cancellationToken = default) =>
+        MutateAsync(new("stage-replace", Replacement: replacement), cancellationToken);
 
-    public ValueTask DeleteIndexUnitAsync(CodeRepositoryId repositoryId, CodePluginId pluginId, CodeIndexUnitId indexUnitId, CancellationToken cancellationToken = default) =>
-        MutateAsync(new("delete", RepositoryId: repositoryId, PluginId: pluginId, UnitId: indexUnitId), cancellationToken);
+    public ValueTask StageIndexUnitDeletionAsync(CodeRepositoryId repositoryId, CodeIndexRunId indexRunId, CodePluginId pluginId, CodeIndexUnitId indexUnitId, CancellationToken cancellationToken = default) =>
+        MutateAsync(new("stage-delete", RepositoryId: repositoryId, RunId: indexRunId, PluginId: pluginId, UnitId: indexUnitId), cancellationToken);
 
     public ValueTask<CodeGraphNode?> GetNodeAsync(CodeRepositoryId repositoryId, CodeNodeId nodeId, CancellationToken cancellationToken = default) =>
         _inner.GetNodeAsync(repositoryId, nodeId, cancellationToken);
+
+    public async ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
+        FindNodesByQualifiedNameWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            string qualifiedName,
+            CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _inner.FindNodesByQualifiedNameWithProvenanceAsync(
+                repositoryId,
+                qualifiedName,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
+        TraverseWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeGraphTraversalQuery query,
+            CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _inner.TraverseWithProvenanceAsync(
+                repositoryId,
+                query,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>
+        GetDeclarationsWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeSymbolId symbolId,
+            CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _inner.GetDeclarationsWithProvenanceAsync(
+                repositoryId,
+                symbolId,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
 
     public async ValueTask<CodeGraphNode?> FindSymbolAsync(CodeRepositoryId repositoryId, CodeSymbolId symbolId, CancellationToken cancellationToken = default)
     {
@@ -103,20 +154,48 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             var queue = new Queue<(CodeNodeId Id, int Depth)>();
             queue.Enqueue((start.Id, 0));
             var truncated = false;
+            var truncationReason = CodeGraphTruncationReason.None;
+            var depthReached = 0;
+            var nodesExamined = 0;
+            var edgesExamined = 0;
+            var omittedFrontierCount = 0;
             while (queue.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var (nodeId, depth) = queue.Dequeue();
+                nodesExamined++;
+                depthReached = Math.Max(depthReached, depth);
                 if (depth >= query.MaxDepth)
+                {
+                    var omitted = ReadTraversalEdges(repositoryId, nodeId, query).Count;
+                    if (omitted > 0)
+                    {
+                        truncated = true;
+                        truncationReason |= CodeGraphTruncationReason.MaxDepth;
+                        omittedFrontierCount += omitted;
+                    }
                     continue;
+                }
                 foreach (var edge in ReadTraversalEdges(repositoryId, nodeId, query))
                 {
+                    edgesExamined++;
                     var adjacentId = edge.SourceId == nodeId ? edge.TargetId : edge.SourceId;
                     var isNew = !visited.Contains(adjacentId.Value);
-                    if (isNew && nodes.Count >= query.MaxNodes) { truncated = true; continue; }
+                    if (isNew && nodes.Count >= query.MaxNodes)
+                    {
+                        truncated = true;
+                        truncationReason |= CodeGraphTruncationReason.MaxNodes;
+                        omittedFrontierCount++;
+                        continue;
+                    }
                     if (edgeIds.Add(edge.Id.Value))
                     {
-                        if (edges.Count >= query.MaxEdges) { truncated = true; break; }
+                        if (edges.Count >= query.MaxEdges)
+                        {
+                            truncated = true;
+                            truncationReason |= CodeGraphTruncationReason.MaxEdges;
+                            break;
+                        }
                         edges.Add(edge);
                     }
                     if (!isNew)
@@ -131,7 +210,15 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
                 if (truncated && edges.Count >= query.MaxEdges)
                     break;
             }
-            return new(nodes, edges, truncated);
+            return new(
+                nodes,
+                edges,
+                truncated,
+                truncationReason,
+                depthReached,
+                nodesExamined,
+                edgesExamined,
+                omittedFrontierCount);
         }
         finally { _gate.Release(); }
     }
@@ -169,7 +256,6 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             {
                 Persist(command, next);
                 _commands = next;
-                _inner = await ReplayAsync(next, CancellationToken.None).ConfigureAwait(false);
             }
             catch
             {
@@ -194,8 +280,15 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
                 case "repository": Upsert("HetuRepository", Key(command.Repository!.Id.Value), Serialize(command.Repository)); break;
                 case "run": Upsert("HetuRun", RunKey(command.Run!), Serialize(command.Run)); break;
                 case "complete":
+                    PublishStagedRun(command.Run!, _commands);
                     Upsert("HetuRun", RunKey(command.Run!), Serialize(command.Run));
                     Upsert("HetuIndexState", Key(command.State!.RepositoryId.Value), Serialize(command.State));
+                    break;
+                case "stage-replace":
+                    Upsert("HetuStage", StageKey(command), Serialize(command));
+                    break;
+                case "stage-delete":
+                    Upsert("HetuStage", StageKey(command), Serialize(command));
                     break;
                 case "replace":
                     Upsert("HetuUnit", UnitKey(command.Replacement!.Origin), Serialize(command.Replacement));
@@ -208,6 +301,8 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
                     break;
                 default: throw new InvalidDataException($"Unknown persisted Hetu command '{command.Kind}'.");
             }
+            if (command.Kind == "run" && command.Run!.Status != CodeIndexRunStatus.Running)
+                DeleteStagedRun(command.Run);
             if (affectedAdjacency.Count > 0)
                 UpdateAdjacency(next, affectedAdjacency);
             _faultInjector?.Invoke("before-commit");
@@ -225,11 +320,9 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         var repositories = ReadPayloads<CodeRepositoryManifest>("HetuRepository")
             .Select(value => new PersistedCommand("repository", Repository: value));
         var runs = ReadPayloads<CodeIndexRunManifest>("HetuRun").ToArray();
-        var running = runs.Select(run => new PersistedCommand("run", Run:
-            run.Status == CodeIndexRunStatus.Running ? run : new CodeIndexRunManifest(
-                run.RepositoryId, run.Id, run.StartedAt, plugins: run.Plugins)));
         var units = ReadPayloads<CodeIndexUnitReplacement>("HetuUnit")
             .Select(value => new PersistedCommand("replace", Replacement: value));
+        var stages = ReadPayloads<PersistedCommand>("HetuStage");
         var states = ReadPayloads<CodeRepositoryIndexState>("HetuIndexState")
             .ToDictionary(state => state.RepositoryId.Value, StringComparer.Ordinal);
         var terminals = runs.Where(run => run.Status != CodeIndexRunStatus.Running)
@@ -237,7 +330,9 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
                     states.TryGetValue(run.RepositoryId.Value, out var state) && state.IndexRunId == run.Id
                 ? new PersistedCommand("complete", Run: run, State: state)
                 : new PersistedCommand("run", Run: run));
-        return repositories.Concat(running).Concat(units).Concat(terminals).ToList();
+        var running = runs.Where(run => run.Status == CodeIndexRunStatus.Running)
+            .Select(run => new PersistedCommand("run", Run: run));
+        return repositories.Concat(running).Concat(terminals).Concat(units).Concat(stages).ToList();
     }
 
     private void InitializeSchema()
@@ -259,6 +354,7 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuRun(key STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuIndexState(key STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuUnit(key STRING, payload STRING, PRIMARY KEY(key))");
+        Execute("CREATE NODE TABLE IF NOT EXISTS HetuStage(key STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuNode(key STRING, repositoryId STRING, unitKey STRING, nodeId STRING, symbolId STRING, qualifiedName STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuDeclaration(key STRING, repositoryId STRING, unitKey STRING, declarationId STRING, symbolId STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuEdge(key STRING, repositoryId STRING, unitKey STRING, edgeId STRING, sourceId STRING, targetId STRING, kind STRING, evidenceKind INT64, payload STRING, PRIMARY KEY(key))");
@@ -309,6 +405,33 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         Execute($"MATCH (s:HetuNode) WHERE s.unitKey = '{unitKey}' DELETE s");
         Execute($"MATCH (s:HetuDeclaration) WHERE s.unitKey = '{unitKey}' DELETE s");
         Execute($"MATCH (s:HetuEdge) WHERE s.unitKey = '{unitKey}' DELETE s");
+    }
+
+    private void PublishStagedRun(
+        CodeIndexRunManifest run,
+        IReadOnlyList<PersistedCommand> commands)
+    {
+        foreach (var staged in commands.Where(command => MatchesRun(command, run)))
+        {
+            if (staged.Kind == "stage-replace")
+            {
+                Upsert("HetuUnit", UnitKey(staged.Replacement!.Origin), Serialize(staged.Replacement));
+                ReplaceFacts(staged.Replacement);
+            }
+            else
+            {
+                var unitKey = UnitKey(staged.RepositoryId!, staged.PluginId!, staged.UnitId!);
+                Delete("HetuUnit", unitKey);
+                DeleteFacts(unitKey);
+            }
+            Delete("HetuStage", StageKey(staged));
+        }
+    }
+
+    private void DeleteStagedRun(CodeIndexRunManifest run)
+    {
+        foreach (var staged in _commands.Where(command => MatchesRun(command, run)))
+            Delete("HetuStage", StageKey(staged));
     }
 
     private T? ReadSingle<T>(string table, string predicate) =>
@@ -421,6 +544,21 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         PersistedCommand command)
     {
         var affected = new HashSet<(string, string)>();
+        if (command.Kind == "complete")
+        {
+            foreach (var replacement in current
+                         .Where(existing => existing.Kind == "replace" || MatchesRun(existing, command.Run!))
+                         .Select(existing => existing.Replacement)
+                         .Where(replacement => replacement is not null && replacement.Origin.RepositoryId == command.Run!.RepositoryId))
+            {
+                foreach (var edge in replacement!.Edges)
+                {
+                    affected.Add((replacement.Origin.RepositoryId.Value, edge.SourceId.Value));
+                    affected.Add((replacement.Origin.RepositoryId.Value, edge.TargetId.Value));
+                }
+            }
+            return affected;
+        }
         IEnumerable<CodeIndexUnitReplacement> replacements = current
             .Where(existing => existing.Kind == "replace" && SameSlot(existing, command))
             .Select(existing => existing.Replacement!);
@@ -454,9 +592,26 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 
     private static List<PersistedCommand> Apply(IReadOnlyList<PersistedCommand> current, PersistedCommand command)
     {
+        if (command.Kind == "complete")
+        {
+            var publishedNext = current.Where(existing => !MatchesRun(existing, command.Run!)).ToList();
+            foreach (var staged in current.Where(existing => MatchesRun(existing, command.Run!)))
+            {
+                var published = staged.Kind == "stage-replace"
+                    ? new PersistedCommand("replace", Replacement: staged.Replacement)
+                    : new PersistedCommand("delete", RepositoryId: staged.RepositoryId, PluginId: staged.PluginId, UnitId: staged.UnitId);
+                publishedNext = Apply(publishedNext, published);
+            }
+            publishedNext = publishedNext.Where(existing => !SameSlot(existing, command)).ToList();
+            publishedNext.Add(command);
+            return publishedNext;
+        }
+
         var next = current.Where(existing => !SameSlot(existing, command)).ToList();
         if (command.Kind != "delete")
             next.Add(command);
+        if (command.Kind == "run" && command.Run!.Status != CodeIndexRunStatus.Running)
+            next.RemoveAll(existing => MatchesRun(existing, command.Run));
         return next;
     }
 
@@ -466,8 +621,21 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         "run" or "complete" => existing.Kind is "run" or "complete" && existing.Run!.RepositoryId == command.Run!.RepositoryId && existing.Run.Id == command.Run.Id,
         "replace" => existing.Kind == "replace" && UnitKey(existing.Replacement!.Origin) == UnitKey(command.Replacement!.Origin),
         "delete" => existing.Kind == "replace" && UnitKey(existing.Replacement!.Origin) == UnitKey(command.RepositoryId!, command.PluginId!, command.UnitId!),
+        "stage-replace" => existing.Kind is "stage-replace" or "stage-delete" && StageKey(existing) == StageKey(command),
+        "stage-delete" => existing.Kind is "stage-replace" or "stage-delete" && StageKey(existing) == StageKey(command),
         _ => false
     };
+
+    private static bool MatchesRun(PersistedCommand command, CodeIndexRunManifest run) =>
+        command.Kind is "stage-replace" or "stage-delete" &&
+        (command.Replacement?.Origin.RepositoryId ?? command.RepositoryId) == run.RepositoryId &&
+        (command.Replacement?.Origin.IndexRunId ?? command.RunId) == run.Id;
+
+    private static string StageKey(PersistedCommand command)
+    {
+        var origin = command.Replacement?.Origin;
+        return Key($"{origin?.RepositoryId.Value ?? command.RepositoryId!.Value}\n{origin?.IndexRunId.Value ?? command.RunId!.Value}\n{origin?.PluginId.Value ?? command.PluginId!.Value}\n{origin?.IndexUnitId.Value ?? command.UnitId!.Value}");
+    }
 
     private void Execute(string query)
     {
@@ -513,8 +681,10 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         foreach (var command in commands.Where(command => command.Kind == "replace"))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await store.ReplaceIndexUnitAsync(command.Replacement!, cancellationToken);
+            await store.RestorePublishedIndexUnitAsync(command.Replacement!, cancellationToken);
         }
+        foreach (var command in commands.Where(command => command.Kind is "stage-replace" or "stage-delete"))
+            await ApplyCommandAsync(store, command, cancellationToken);
         foreach (var command in commands.Where(command => command.Kind is "run" or "complete" &&
                      command.Run!.Status != CodeIndexRunStatus.Running))
         {
@@ -537,8 +707,8 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             case "repository": await store.UpsertRepositoryAsync(command.Repository!, cancellationToken); break;
             case "run": await store.StoreIndexRunAsync(command.Run!, cancellationToken); break;
             case "complete": await store.CompleteIndexRunAsync(command.Run!, command.State!, cancellationToken); break;
-            case "replace": await store.ReplaceIndexUnitAsync(command.Replacement!, cancellationToken); break;
-            case "delete": await store.DeleteIndexUnitAsync(command.RepositoryId!, command.PluginId!, command.UnitId!, cancellationToken); break;
+            case "stage-replace": await store.StageIndexUnitAsync(command.Replacement!, cancellationToken); break;
+            case "stage-delete": await store.StageIndexUnitDeletionAsync(command.RepositoryId!, command.RunId!, command.PluginId!, command.UnitId!, cancellationToken); break;
             default: throw new InvalidDataException($"Unknown persisted Hetu command '{command.Kind}'.");
         }
     }
@@ -552,6 +722,7 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         CodeRepositoryIndexState? State = null,
         CodeIndexUnitReplacement? Replacement = null,
         CodeRepositoryId? RepositoryId = null,
+        CodeIndexRunId? RunId = null,
         CodePluginId? PluginId = null,
         CodeIndexUnitId? UnitId = null);
 

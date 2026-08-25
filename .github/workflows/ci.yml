@@ -21,6 +21,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: dotnet restore Penghou.Hetu.slnx
+      - run: dotnet format Penghou.Hetu.slnx --verify-no-changes --no-restore
       - run: dotnet test Penghou.Hetu.slnx -c Release --no-restore
 
   pack:

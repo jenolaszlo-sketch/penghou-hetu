@@ -342,7 +342,7 @@ public sealed class CSharpCodeGraphPluginTests
             node => node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Lib.Value");
         Assert.Equal(2, extracted.UnitIds.Count);
         Assert.Equal(0, extracted.Result.UnresolvedRelationships);
-        Assert.Contains(
+        Assert.DoesNotContain(
             extracted.Result.ObsoleteIndexUnits,
             unit => unit.Value == "csharp:repository");
     }

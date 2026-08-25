@@ -10,6 +10,9 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
     private readonly Dictionary<string, CodeRepositoryIndexState> _indexStates =
         new(StringComparer.Ordinal);
     private Dictionary<OwnerKey, CodeIndexUnitReplacement> _units = [];
+    private readonly Dictionary<RunKey, StagedRun> _staged = [];
+    private readonly Dictionary<string, MaterializedGraph> _materialized =
+        new(StringComparer.Ordinal);
 
     public ValueTask UpsertRepositoryAsync(
         CodeRepositoryManifest repository,
@@ -65,6 +68,8 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                 ValidateRunTransition(existing, run);
             }
             _runs[key] = run;
+            if (run.Status is CodeIndexRunStatus.Failed or CodeIndexRunStatus.Cancelled)
+                _staged.Remove(key);
         }
 
         return ValueTask.CompletedTask;
@@ -131,9 +136,20 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
             }
 
             ValidateRunTransition(running, completedRun);
+            var prospective = ApplyStagedChanges(key);
+            var errors = ValidateMaterializedGraph(completedRun.RepositoryId, prospective);
+            if (errors.Count > 0)
+            {
+                throw new CodeGraphBatchRejectedException(
+                    "The staged index run would violate graph invariants.",
+                    errors);
+            }
             cancellationToken.ThrowIfCancellationRequested();
+            _units = prospective;
+            _materialized.Remove(completedRun.RepositoryId.Value);
             _runs[key] = completedRun;
             _indexStates[state.RepositoryId.Value] = state;
+            _staged.Remove(key);
         }
 
         return ValueTask.CompletedTask;
@@ -149,7 +165,7 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
             return new(_indexStates.GetValueOrDefault(repositoryId.Value));
     }
 
-    public ValueTask ReplaceIndexUnitAsync(
+    public ValueTask StageIndexUnitAsync(
         CodeIndexUnitReplacement replacement,
         CancellationToken cancellationToken = default)
     {
@@ -159,11 +175,12 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         {
             EnsureKnownOwnership(replacement.Origin);
             var owner = OwnerKey.From(replacement.Origin);
-            var prospective = new Dictionary<OwnerKey, CodeIndexUnitReplacement>(
-                _units)
-            {
-                [owner] = replacement
-            };
+            var runKey = new RunKey(
+                replacement.Origin.RepositoryId.Value,
+                replacement.Origin.IndexRunId.Value);
+            var staged = GetOrCreateStagedRun(runKey);
+            var prospective = ApplyStagedChanges(runKey);
+            prospective[owner] = replacement;
             var errors = ValidateMaterializedGraph(
                 replacement.Origin.RepositoryId,
                 prospective);
@@ -173,32 +190,58 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                     errors);
 
             cancellationToken.ThrowIfCancellationRequested();
-            _units = prospective;
+            staged.Deletions.Remove(owner);
+            staged.Replacements[owner] = replacement;
         }
 
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DeleteIndexUnitAsync(
+    internal ValueTask RestorePublishedIndexUnitAsync(
+        CodeIndexUnitReplacement replacement,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var prospective = new Dictionary<OwnerKey, CodeIndexUnitReplacement>(_units)
+            {
+                [OwnerKey.From(replacement.Origin)] = replacement
+            };
+            var errors = ValidateMaterializedGraph(replacement.Origin.RepositoryId, prospective);
+            if (errors.Count > 0)
+                throw new CodeGraphBatchRejectedException("The restored graph is invalid.", errors);
+            _units = prospective;
+            _materialized.Remove(replacement.Origin.RepositoryId.Value);
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask StageIndexUnitDeletionAsync(
         CodeRepositoryId repositoryId,
+        CodeIndexRunId indexRunId,
         CodePluginId pluginId,
         CodeIndexUnitId indexUnitId,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(indexRunId);
         ArgumentNullException.ThrowIfNull(pluginId);
         ArgumentNullException.ThrowIfNull(indexUnitId);
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            var prospective = new Dictionary<OwnerKey, CodeIndexUnitReplacement>(
-                _units);
-            prospective.Remove(new OwnerKey(
+            var runKey = new RunKey(repositoryId.Value, indexRunId.Value);
+            EnsureRunningRun(runKey, pluginId);
+            var owner = new OwnerKey(
                 repositoryId.Value,
                 pluginId.Value,
-                indexUnitId.Value));
+                indexUnitId.Value);
             cancellationToken.ThrowIfCancellationRequested();
-            _units = prospective;
+            var staged = GetOrCreateStagedRun(runKey);
+            staged.Replacements.Remove(owner);
+            staged.Deletions.Add(owner);
         }
 
         return ValueTask.CompletedTask;
@@ -216,6 +259,96 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         {
             var graph = Materialize(repositoryId);
             return new(graph.Nodes.GetValueOrDefault(nodeId.Value));
+        }
+    }
+
+    public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
+        FindNodesByQualifiedNameWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            string qualifiedName,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(qualifiedName);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!TryGetPublication(repositoryId, out var publication))
+                return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(null);
+            var graph = Materialize(repositoryId);
+            var nodes = graph.Nodes.Values
+                .Where(node => string.Equals(node.QualifiedName, qualifiedName, StringComparison.Ordinal))
+                .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
+                .ToArray();
+            return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(
+                new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>(
+                    publication,
+                    new("qualified-name", qualifiedName),
+                    nodes,
+                    ProvenanceForNodes(graph, nodes).ToArray()));
+        }
+    }
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
+        TraverseWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeGraphTraversalQuery query,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!TryGetPublication(repositoryId, out var publication))
+                return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(null);
+            var graph = Materialize(repositoryId);
+            var result = graph.Nodes.ContainsKey(query.StartNodeId.Value)
+                ? Traverse(graph, query, cancellationToken)
+                : new CodeGraphTraversalResult([], [], false);
+            var provenance = ProvenanceForNodes(graph, result.Nodes)
+                .Concat(ProvenanceForEdges(graph, result.Edges))
+                .ToArray();
+            return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(
+                new CodeGraphQueryEnvelope<CodeGraphTraversalResult>(
+                    publication,
+                    new("traversal", Traversal: query),
+                    result,
+                    provenance));
+        }
+    }
+
+    public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>
+        GetDeclarationsWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeSymbolId symbolId,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(symbolId);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!TryGetPublication(repositoryId, out var publication))
+                return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(null);
+            var graph = Materialize(repositoryId);
+            var declarations = graph.Declarations.Values
+                .Where(declaration => declaration.SymbolId == symbolId)
+                .OrderBy(declaration => declaration.Location.Path, StringComparer.Ordinal)
+                .ThenBy(declaration => declaration.Location.StartLine)
+                .ThenBy(declaration => declaration.Location.StartColumn)
+                .ThenBy(declaration => declaration.Id.Value, StringComparer.Ordinal)
+                .ToArray();
+            var provenance = declarations.Select(declaration => new CodeGraphFactProvenance(
+                CodeGraphFactKind.Declaration,
+                declaration.Id.Value,
+                graph.DeclarationOrigins.GetValueOrDefault(declaration.Id.Value) ?? [])).ToArray();
+            return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(
+                new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>(
+                    publication,
+                    new("declarations"),
+                    declarations,
+                    provenance));
         }
     }
 
@@ -327,6 +460,42 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         }
     }
 
+    private void EnsureRunningRun(RunKey key, CodePluginId pluginId)
+    {
+        if (!_repositories.ContainsKey(key.RepositoryId) ||
+            !_runs.TryGetValue(key, out var run) ||
+            run.Status != CodeIndexRunStatus.Running ||
+            !run.Plugins.Contains(pluginId))
+        {
+            throw Rejected(
+                CodeGraphValidationErrorKind.OwnershipMismatch,
+                "deletion.run.not-running",
+                "The deletion index run and plugin must be registered and running.");
+        }
+    }
+
+    private StagedRun GetOrCreateStagedRun(RunKey key)
+    {
+        if (!_staged.TryGetValue(key, out var staged))
+        {
+            staged = new StagedRun();
+            _staged.Add(key, staged);
+        }
+        return staged;
+    }
+
+    private Dictionary<OwnerKey, CodeIndexUnitReplacement> ApplyStagedChanges(RunKey key)
+    {
+        var prospective = new Dictionary<OwnerKey, CodeIndexUnitReplacement>(_units);
+        if (!_staged.TryGetValue(key, out var staged))
+            return prospective;
+        foreach (var owner in staged.Deletions)
+            prospective.Remove(owner);
+        foreach (var replacement in staged.Replacements)
+            prospective[replacement.Key] = replacement.Value;
+        return prospective;
+    }
+
     private static bool RunsEquivalent(
         CodeIndexRunManifest first,
         CodeIndexRunManifest second) =>
@@ -413,8 +582,15 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         }
     }
 
-    private MaterializedGraph Materialize(CodeRepositoryId repositoryId) =>
-        Materialize(repositoryId, _units, null);
+    private MaterializedGraph Materialize(CodeRepositoryId repositoryId)
+    {
+        if (!_materialized.TryGetValue(repositoryId.Value, out var graph))
+        {
+            graph = Materialize(repositoryId, _units, null);
+            _materialized.Add(repositoryId.Value, graph);
+        }
+        return graph;
+    }
 
     private static MaterializedGraph Materialize(
         CodeRepositoryId repositoryId,
@@ -425,6 +601,9 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         var declarations = new Dictionary<string, CodeGraphDeclaration>(
             StringComparer.Ordinal);
         var edges = new Dictionary<string, CodeGraphEdge>(StringComparer.Ordinal);
+        var nodeOrigins = new Dictionary<string, List<CodeFactOrigin>>(StringComparer.Ordinal);
+        var declarationOrigins = new Dictionary<string, List<CodeFactOrigin>>(StringComparer.Ordinal);
+        var edgeOrigins = new Dictionary<string, List<CodeFactOrigin>>(StringComparer.Ordinal);
 
         foreach (var unit in units
                      .Where(pair => pair.Key.RepositoryId == repositoryId.Value)
@@ -432,6 +611,12 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                      .ThenBy(pair => pair.Key.IndexUnitId, StringComparer.Ordinal)
                      .Select(pair => pair.Value))
         {
+            foreach (var node in unit.Nodes)
+                AddOrigin(nodeOrigins, node.Id.Value, unit.Origin);
+            foreach (var declaration in unit.Declarations)
+                AddOrigin(declarationOrigins, declaration.Id.Value, unit.Origin);
+            foreach (var edge in unit.Edges)
+                AddOrigin(edgeOrigins, edge.Id.Value, unit.Origin);
             Merge(
                 unit.Nodes,
                 nodes,
@@ -500,8 +685,59 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
             }
         }
 
-        return new MaterializedGraph(nodes, declarations, visibleEdges);
+        var outgoing = visibleEdges.Values
+            .GroupBy(edge => edge.SourceId.Value, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<CodeGraphEdge>)OrderEdges(group).ToArray(),
+                StringComparer.Ordinal);
+        var incoming = visibleEdges.Values
+            .GroupBy(edge => edge.TargetId.Value, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<CodeGraphEdge>)OrderEdges(group).ToArray(),
+                StringComparer.Ordinal);
+        return new MaterializedGraph(
+            nodes,
+            declarations,
+            visibleEdges,
+            outgoing,
+            incoming,
+            FreezeOrigins(nodeOrigins),
+            FreezeOrigins(declarationOrigins),
+            FreezeOrigins(edgeOrigins));
     }
+
+    private static void AddOrigin(
+        IDictionary<string, List<CodeFactOrigin>> origins,
+        string factId,
+        CodeFactOrigin origin)
+    {
+        if (!origins.TryGetValue(factId, out var values))
+        {
+            values = [];
+            origins.Add(factId, values);
+        }
+        if (!values.Contains(origin))
+            values.Add(origin);
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<CodeFactOrigin>> FreezeOrigins(
+        IReadOnlyDictionary<string, List<CodeFactOrigin>> origins) =>
+        origins.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<CodeFactOrigin>)pair.Value
+                .OrderBy(origin => origin.PluginId.Value, StringComparer.Ordinal)
+                .ThenBy(origin => origin.IndexUnitId.Value, StringComparer.Ordinal)
+                .ToArray(),
+            StringComparer.Ordinal);
+
+    private static IOrderedEnumerable<CodeGraphEdge> OrderEdges(
+        IEnumerable<CodeGraphEdge> edges) =>
+        edges.OrderBy(edge => edge.Kind.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.SourceId.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.TargetId.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.Id.Value, StringComparer.Ordinal);
 
     private static void Merge<T>(
         IEnumerable<T> contributions,
@@ -553,27 +789,39 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         var queue = new Queue<(string NodeId, int Depth)>();
         queue.Enqueue((query.StartNodeId.Value, 0));
         var truncated = false;
+        var truncationReason = CodeGraphTruncationReason.None;
+        var depthReached = 0;
+        var nodesExamined = 0;
+        var edgesExamined = 0;
+        var omittedFrontierCount = 0;
 
         while (queue.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (nodeId, depth) = queue.Dequeue();
+            nodesExamined++;
+            depthReached = Math.Max(depthReached, depth);
             if (depth >= query.MaxDepth)
+            {
+                var omitted = AdjacentEdges(graph, nodeId, query.Direction)
+                    .Count(edge =>
+                        (selectedKinds.Count == 0 || selectedKinds.Contains(edge.Kind.Value)) &&
+                        (selectedEvidence.Count == 0 || selectedEvidence.Contains(edge.Evidence.Kind)));
+                if (omitted > 0)
+                {
+                    truncated = true;
+                    truncationReason |= CodeGraphTruncationReason.MaxDepth;
+                    omittedFrontierCount += omitted;
+                }
                 continue;
+            }
 
-            var candidates = graph.Edges.Values
+            var candidates = AdjacentEdges(graph, nodeId, query.Direction)
                 .Where(edge => selectedKinds.Count == 0 ||
                     selectedKinds.Contains(edge.Kind.Value))
                 .Where(edge => selectedEvidence.Count == 0 ||
                     selectedEvidence.Contains(edge.Evidence.Kind))
-                .Where(edge => query.Direction switch
-                {
-                    CodeGraphDirection.Outgoing => edge.SourceId.Value == nodeId,
-                    CodeGraphDirection.Incoming => edge.TargetId.Value == nodeId,
-                    CodeGraphDirection.Both =>
-                        edge.SourceId.Value == nodeId || edge.TargetId.Value == nodeId,
-                    _ => false
-                })
+                .DistinctBy(edge => edge.Id.Value)
                 .OrderBy(edge => edge.Kind.Value, StringComparer.Ordinal)
                 .ThenBy(edge => edge.SourceId.Value, StringComparer.Ordinal)
                 .ThenBy(edge => edge.TargetId.Value, StringComparer.Ordinal)
@@ -581,6 +829,7 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
 
             foreach (var edge in candidates)
             {
+                edgesExamined++;
                 var adjacent = edge.SourceId.Value == nodeId
                     ? edge.TargetId.Value
                     : edge.SourceId.Value;
@@ -588,6 +837,8 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                 if (isNewNode && nodes.Count >= query.MaxNodes)
                 {
                     truncated = true;
+                    truncationReason |= CodeGraphTruncationReason.MaxNodes;
+                    omittedFrontierCount++;
                     continue;
                 }
 
@@ -596,6 +847,7 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                     if (edges.Count >= query.MaxEdges)
                     {
                         truncated = true;
+                        truncationReason |= CodeGraphTruncationReason.MaxEdges;
                         break;
                     }
 
@@ -614,8 +866,62 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                 break;
         }
 
-        return new CodeGraphTraversalResult(nodes, edges, truncated);
+        return new CodeGraphTraversalResult(
+            nodes,
+            edges,
+            truncated,
+            truncationReason,
+            depthReached,
+            nodesExamined,
+            edgesExamined,
+            omittedFrontierCount);
     }
+
+    private static IEnumerable<CodeGraphEdge> AdjacentEdges(
+        MaterializedGraph graph,
+        string nodeId,
+        CodeGraphDirection direction) => direction switch
+        {
+            CodeGraphDirection.Outgoing => graph.Outgoing.GetValueOrDefault(nodeId) ?? [],
+            CodeGraphDirection.Incoming => graph.Incoming.GetValueOrDefault(nodeId) ?? [],
+            CodeGraphDirection.Both =>
+                (graph.Outgoing.GetValueOrDefault(nodeId) ?? [])
+                .Concat(graph.Incoming.GetValueOrDefault(nodeId) ?? []),
+            _ => throw new ArgumentOutOfRangeException(nameof(direction))
+        };
+
+    private bool TryGetPublication(
+        CodeRepositoryId repositoryId,
+        out CodeGraphPublication publication)
+    {
+        if (_indexStates.TryGetValue(repositoryId.Value, out var state))
+        {
+            publication = new(
+                repositoryId,
+                state.IndexRunId,
+                state.SnapshotIdentity,
+                state.IsConsistentSnapshot);
+            return true;
+        }
+        publication = null!;
+        return false;
+    }
+
+    private static IEnumerable<CodeGraphFactProvenance> ProvenanceForNodes(
+        MaterializedGraph graph,
+        IEnumerable<CodeGraphNode> nodes) =>
+        nodes.Select(node => new CodeGraphFactProvenance(
+            CodeGraphFactKind.Node,
+            node.Id.Value,
+            graph.NodeOrigins.GetValueOrDefault(node.Id.Value) ?? []));
+
+    private static IEnumerable<CodeGraphFactProvenance> ProvenanceForEdges(
+        MaterializedGraph graph,
+        IEnumerable<CodeGraphEdge> edges) =>
+        edges.Select(edge => new CodeGraphFactProvenance(
+            CodeGraphFactKind.Edge,
+            edge.Id.Value,
+            graph.EdgeOrigins.GetValueOrDefault(edge.Id.Value) ?? []));
 
     private static CodeGraphBatchRejectedException Rejected(
         CodeGraphValidationErrorKind kind,
@@ -644,8 +950,19 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
 
     private readonly record struct RunKey(string RepositoryId, string RunId);
 
+    private sealed class StagedRun
+    {
+        public Dictionary<OwnerKey, CodeIndexUnitReplacement> Replacements { get; } = [];
+        public HashSet<OwnerKey> Deletions { get; } = [];
+    }
+
     private sealed record MaterializedGraph(
         IReadOnlyDictionary<string, CodeGraphNode> Nodes,
         IReadOnlyDictionary<string, CodeGraphDeclaration> Declarations,
-        IReadOnlyDictionary<string, CodeGraphEdge> Edges);
+        IReadOnlyDictionary<string, CodeGraphEdge> Edges,
+        IReadOnlyDictionary<string, IReadOnlyList<CodeGraphEdge>> Outgoing,
+        IReadOnlyDictionary<string, IReadOnlyList<CodeGraphEdge>> Incoming,
+        IReadOnlyDictionary<string, IReadOnlyList<CodeFactOrigin>> NodeOrigins,
+        IReadOnlyDictionary<string, IReadOnlyList<CodeFactOrigin>> DeclarationOrigins,
+        IReadOnlyDictionary<string, IReadOnlyList<CodeFactOrigin>> EdgeOrigins);
 }

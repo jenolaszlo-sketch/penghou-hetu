@@ -192,11 +192,82 @@ public sealed record CodeGraphTraversalQuery
     public int MaxEdges { get; }
 }
 
+[Flags]
+public enum CodeGraphTruncationReason
+{
+    None = 0,
+    MaxDepth = 1,
+    MaxNodes = 2,
+    MaxEdges = 4
+}
+
 /// <summary>A bounded, deterministically ordered graph traversal result.</summary>
-public sealed record CodeGraphTraversalResult(
-    IReadOnlyList<CodeGraphNode> Nodes,
-    IReadOnlyList<CodeGraphEdge> Edges,
-    bool Truncated);
+public sealed record CodeGraphTraversalResult
+{
+    public CodeGraphTraversalResult(
+        IReadOnlyList<CodeGraphNode> nodes,
+        IReadOnlyList<CodeGraphEdge> edges,
+        bool truncated,
+        CodeGraphTruncationReason truncationReason = CodeGraphTruncationReason.None,
+        int depthReached = 0,
+        int nodesExamined = 0,
+        int edgesExamined = 0,
+        int omittedFrontierCount = 0)
+    {
+        Nodes = nodes ?? throw new ArgumentNullException(nameof(nodes));
+        Edges = edges ?? throw new ArgumentNullException(nameof(edges));
+        if (depthReached < 0 || nodesExamined < 0 || edgesExamined < 0 || omittedFrontierCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(depthReached));
+        Truncated = truncated;
+        TruncationReason = truncated ? truncationReason : CodeGraphTruncationReason.None;
+        DepthReached = depthReached;
+        NodesExamined = nodesExamined;
+        EdgesExamined = edgesExamined;
+        OmittedFrontierCount = omittedFrontierCount;
+    }
+
+    public IReadOnlyList<CodeGraphNode> Nodes { get; }
+    public IReadOnlyList<CodeGraphEdge> Edges { get; }
+    public bool Truncated { get; }
+    public CodeGraphTruncationReason TruncationReason { get; }
+    public int DepthReached { get; }
+    public int NodesExamined { get; }
+    public int EdgesExamined { get; }
+    public int OmittedFrontierCount { get; }
+}
+
+/// <summary>Identifies the successful repository publication observed by a query.</summary>
+public sealed record CodeGraphPublication(
+    CodeRepositoryId RepositoryId,
+    CodeIndexRunId IndexRunId,
+    string? SnapshotIdentity,
+    bool IsConsistentSnapshot);
+
+public enum CodeGraphFactKind
+{
+    Node = 0,
+    Declaration = 1,
+    Edge = 2
+}
+
+/// <summary>Traces one returned fact to every index unit that contributed it.</summary>
+public sealed record CodeGraphFactProvenance(
+    CodeGraphFactKind Kind,
+    string FactId,
+    IReadOnlyList<CodeFactOrigin> Contributors);
+
+/// <summary>Binds a query result and its contributors to one atomic publication.</summary>
+public sealed record CodeGraphQueryDescriptor(
+    string Operation,
+    string? QualifiedName = null,
+    CodeGraphTraversalQuery? Traversal = null);
+
+/// <summary>Binds a query result and its contributors to one atomic publication.</summary>
+public sealed record CodeGraphQueryEnvelope<TResult>(
+    CodeGraphPublication Publication,
+    CodeGraphQueryDescriptor Query,
+    TResult Result,
+    IReadOnlyList<CodeGraphFactProvenance> Provenance);
 
 /// <summary>Privacy-safe counters from one completed index-unit ingestion.</summary>
 public sealed record CodeGraphIngestionDiagnostics(

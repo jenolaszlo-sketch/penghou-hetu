@@ -41,6 +41,8 @@ public sealed class CodeGraphIngestionSinkTests
             setup.Origin,
             completesIndexUnit: true));
 
+        Assert.Null(await setup.Store.GetNodeAsync(setup.RepositoryId, node.Id));
+        await PublishAsync(setup);
         Assert.NotNull(await setup.Store.GetNodeAsync(setup.RepositoryId, node.Id));
     }
 
@@ -49,8 +51,9 @@ public sealed class CodeGraphIngestionSinkTests
     {
         var setup = await SetupAsync();
         var original = Node("original");
-        await setup.Store.ReplaceIndexUnitAsync(
+        await setup.Store.StageIndexUnitAsync(
             new CodeIndexUnitReplacement(setup.Origin, [original]));
+        await PublishAsync(setup);
         await using var sink = new CodeGraphIngestionSink(
             setup.Store,
             new CodeGraphBatchLimits(maxNodes: 1));
@@ -135,6 +138,7 @@ public sealed class CodeGraphIngestionSinkTests
             nodes: [node],
             completesIndexUnit: true));
 
+        await PublishAsync(setup);
         Assert.NotNull(await setup.Store.GetNodeAsync(setup.RepositoryId, node.Id));
     }
 
@@ -191,6 +195,22 @@ public sealed class CodeGraphIngestionSinkTests
             $"Example.{id}",
             new CodeSymbolId($"symbol:{id}"),
             properties);
+
+    private static async ValueTask PublishAsync(Setup setup)
+    {
+        var running = (await setup.Store.GetIndexRunAsync(
+            setup.RepositoryId,
+            setup.Origin.IndexRunId))!;
+        await setup.Store.CompleteIndexRunAsync(
+            new(
+                setup.RepositoryId,
+                setup.Origin.IndexRunId,
+                running.StartedAt,
+                CodeIndexRunStatus.Completed,
+                running.StartedAt.AddSeconds(1),
+                [setup.Origin.PluginId]),
+            new(setup.RepositoryId, setup.Origin.IndexRunId, []));
+    }
 
     private sealed record Setup(
         InMemoryCodeGraphStore Store,

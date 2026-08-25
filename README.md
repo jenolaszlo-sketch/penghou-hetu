@@ -32,10 +32,10 @@ ANTLR parsers, hand-written parsers, or other deterministic extraction tools.
 
 ## Status
 
-Hetu is at the initial architecture and scaffolding stage. The public contracts
-and in-memory runtime are implemented, but the API remains preview-quality and
-no package has been published yet. See [ROADMAP.md](ROADMAP.md) for the
-implementation milestones and semantic invariants.
+Hetu has a working preview runtime, C# extractor, durable Ladybug provider, and
+shared provider conformance suite. The API remains preview-quality and is
+currently built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
+semantic milestones and first-release invariants.
 
 ## Planned packages
 
@@ -54,7 +54,7 @@ It is intentionally outside the first milestone.
 ## Runtime foundation
 
 The current runtime supports deterministic plugin registration, strict bounded
-batch ingestion, atomic index-unit replacement, repository and index-run
+batch ingestion, run-scoped atomic publication, repository and index-run
 manifests, exact symbol/declaration lookup, and bounded graph traversal:
 
 ```csharp
@@ -207,6 +207,14 @@ counts use a conservative set of missing symbol, namespace, member, and assembly
 diagnostics; syntax errors remain visible as warning codes without being
 misclassified as relationship failures.
 
+The lightweight plugin currently builds Roslyn platform references from the
+host runtime's trusted platform assemblies. This keeps extraction independent
+of MSBuild, but a project targeting another framework may be analyzed against
+the host's .NET 10 reference surface. Hosts requiring exact target-framework
+semantics should treat this as a known preview limitation; a future opt-in
+reference resolver can supply targeting-pack metadata without changing Hetu's
+graph contracts.
+
 ## Provider-neutral queries
 
 `CodeGraphQueryService` provides exact symbol and declaration lookup plus
@@ -215,6 +223,12 @@ dependents, neighborhoods, and impact sets. Exact qualified-name lookup retains
 all candidates and reports ambiguity instead of selecting one implicitly.
 Traversal limits and evidence-kind filters are applied by the store, so filtered
 queries cannot exceed their declared node, edge, or depth budgets.
+
+Provenance-aware query variants return a `CodeGraphQueryEnvelope<T>` binding
+the result to one successful publication and the exact applied query. Returned
+nodes, declarations, and edges include every contributing plugin version and
+index-unit origin. Traversal results also report the truncation reason, depth
+reached, examined counts, and omitted frontier count.
 
 ## Ladybug persistence
 

@@ -9,7 +9,8 @@ BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 public class LadybugStoreBenchmarks
 {
     private readonly CodeRepositoryId _repositoryId = new("repo:benchmark");
-    private readonly CodeIndexRunId _runId = new("run:benchmark");
+    private readonly CodeIndexRunId _publishedRunId = new("run:benchmark:published");
+    private readonly CodeIndexRunId _stagingRunId = new("run:benchmark:staging");
     private readonly CodePluginId _pluginId = new("plugin:benchmark");
     private string _databasePath = null!;
     private LadybugCodeGraphStore _store = null!;
@@ -28,10 +29,19 @@ public class LadybugStoreBenchmarks
         _store = new(_databasePath);
         var started = DateTimeOffset.UtcNow;
         await _store.UpsertRepositoryAsync(new(_repositoryId));
-        await _store.StoreIndexRunAsync(new(_repositoryId, _runId, started, plugins: [_pluginId]));
-        _replacement = CreateReplacement(NodeCount);
-        _middleNodeId = _replacement.Nodes[NodeCount / 2].Id;
-        await _store.ReplaceIndexUnitAsync(_replacement);
+        await _store.StoreIndexRunAsync(new(_repositoryId, _publishedRunId, started, plugins: [_pluginId]));
+        var published = CreateReplacement(NodeCount, _publishedRunId);
+        _middleNodeId = published.Nodes[NodeCount / 2].Id;
+        await _store.StageIndexUnitAsync(published);
+        await _store.CompleteIndexRunAsync(
+            new(_repositoryId, _publishedRunId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [_pluginId]),
+            new(_repositoryId, _publishedRunId, []));
+        await _store.StoreIndexRunAsync(new(
+            _repositoryId,
+            _stagingRunId,
+            started.AddSeconds(2),
+            plugins: [_pluginId]));
+        _replacement = CreateReplacement(NodeCount, _stagingRunId);
     }
 
     [GlobalCleanup]
@@ -43,7 +53,7 @@ public class LadybugStoreBenchmarks
     }
 
     [Benchmark]
-    public ValueTask ReplaceIndexUnit() => _store.ReplaceIndexUnitAsync(_replacement);
+    public ValueTask StageIndexUnit() => _store.StageIndexUnitAsync(_replacement);
 
     [Benchmark]
     public ValueTask<IReadOnlyList<CodeGraphNode>> ExactQualifiedNameLookup() =>
@@ -58,8 +68,8 @@ public class LadybugStoreBenchmarks
     [Benchmark]
     public async Task DeleteAndReinsertUnit()
     {
-        await _store.DeleteIndexUnitAsync(_repositoryId, _pluginId, _replacement.Origin.IndexUnitId);
-        await _store.ReplaceIndexUnitAsync(_replacement);
+        await _store.StageIndexUnitDeletionAsync(_repositoryId, _stagingRunId, _pluginId, _replacement.Origin.IndexUnitId);
+        await _store.StageIndexUnitAsync(_replacement);
     }
 
     [Benchmark]
@@ -70,7 +80,7 @@ public class LadybugStoreBenchmarks
         return _store.CheckHealth();
     }
 
-    private CodeIndexUnitReplacement CreateReplacement(int count)
+    private CodeIndexUnitReplacement CreateReplacement(int count, CodeIndexRunId runId)
     {
         var nodes = Enumerable.Range(0, count).Select(index => new CodeGraphNode(
             new($"node:{index:D6}"),
@@ -85,7 +95,7 @@ public class LadybugStoreBenchmarks
             CodeEdgeKinds.Calls,
             new(CodeEvidenceKind.Semantic, "benchmark"))).ToArray();
         return new(
-            new CodeFactOrigin(_repositoryId, _pluginId, "1.0.0", _runId, new("unit:benchmark")),
+            new CodeFactOrigin(_repositoryId, _pluginId, "1.0.0", runId, new("unit:benchmark")),
             nodes,
             edges: edges);
     }

@@ -16,7 +16,7 @@ public sealed class CodeGraphQueryServiceTests
         var target = Node("target", "Example.Target");
         var semanticCaller = Node("semantic-caller", "Example.SemanticCaller");
         var heuristicCaller = Node("heuristic-caller", "Example.HeuristicCaller");
-        await store.ReplaceIndexUnitAsync(new(
+        await store.StageIndexUnitAsync(new(
             new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:queries")),
             [target, semanticCaller, heuristicCaller],
             edges:
@@ -24,6 +24,7 @@ public sealed class CodeGraphQueryServiceTests
                 Edge("semantic", semanticCaller.Id, target.Id, CodeEvidenceKind.Semantic),
                 Edge("heuristic", heuristicCaller.Id, target.Id, CodeEvidenceKind.Heuristic)
             ]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
         var queries = new CodeGraphQueryService(store);
 
         var callers = await queries.FindCallersAsync(
@@ -48,9 +49,10 @@ public sealed class CodeGraphQueryServiceTests
         await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
         var first = Node("z", "Example.Duplicate");
         var second = Node("a", "Example.Duplicate");
-        await store.ReplaceIndexUnitAsync(new(
+        await store.StageIndexUnitAsync(new(
             new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:lookup")),
             [first, second]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
 
         var result = await new CodeGraphQueryService(store)
             .FindSymbolAsync(repositoryId, "Example.Duplicate");
@@ -65,7 +67,17 @@ public sealed class CodeGraphQueryServiceTests
         CodeNodeKinds.Callable,
         name[(name.LastIndexOf('.') + 1)..],
         name,
-        new CodeSymbolId($"symbol:{id}"));
+            new CodeSymbolId($"symbol:{id}"));
+
+    private static ValueTask CompleteAsync(
+        ICodeGraphStore store,
+        CodeRepositoryId repositoryId,
+        CodeIndexRunId runId,
+        CodePluginId pluginId,
+        DateTimeOffset started) =>
+        store.CompleteIndexRunAsync(
+            new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+            new(repositoryId, runId, []));
 
     private static CodeGraphEdge Edge(
         string id,

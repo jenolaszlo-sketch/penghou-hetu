@@ -138,7 +138,6 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                     change.Path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
                 .Select(change => new CodeIndexUnitId(
                     CSharpProjectDiscovery.IndexUnitId(change.Path)))
-                .Append(new CodeIndexUnitId("csharp:repository"))
                 .Distinct()
                 .ToArray();
             return new CodeGraphExtractionResult(

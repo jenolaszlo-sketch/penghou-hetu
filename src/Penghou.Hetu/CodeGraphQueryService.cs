@@ -37,9 +37,9 @@ public sealed record CodeSymbolLookupResult(IReadOnlyList<CodeGraphNode> Candida
 /// <summary>Provides bounded semantic queries without exposing store-specific languages.</summary>
 public sealed class CodeGraphQueryService
 {
-    private readonly ICodeGraphStore _store;
+    private readonly ICodeGraphReader _store;
 
-    public CodeGraphQueryService(ICodeGraphStore store) =>
+    public CodeGraphQueryService(ICodeGraphReader store) =>
         _store = store ?? throw new ArgumentNullException(nameof(store));
 
     public async ValueTask<CodeSymbolLookupResult> FindSymbolAsync(
@@ -57,11 +57,43 @@ public sealed class CodeGraphQueryService
         return new(candidates.OrderBy(node => node.Id.Value, StringComparer.Ordinal).ToArray());
     }
 
+    public async ValueTask<CodeGraphQueryEnvelope<CodeSymbolLookupResult>?>
+        FindSymbolWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            string qualifiedName,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        if (string.IsNullOrWhiteSpace(qualifiedName))
+            throw new ArgumentException("Qualified name is required.", nameof(qualifiedName));
+        var envelope = await _store.FindNodesByQualifiedNameWithProvenanceAsync(
+            repositoryId,
+            qualifiedName,
+            cancellationToken).ConfigureAwait(false);
+        return envelope is null
+            ? null
+            : new(
+                envelope.Publication,
+                envelope.Query,
+                new(envelope.Result),
+                envelope.Provenance);
+    }
+
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> FindDeclarationsAsync(
         CodeRepositoryId repositoryId,
         CodeSymbolId symbolId,
         CancellationToken cancellationToken = default) =>
         _store.GetDeclarationsAsync(repositoryId, symbolId, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>
+        FindDeclarationsWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeSymbolId symbolId,
+            CancellationToken cancellationToken = default) =>
+        _store.GetDeclarationsWithProvenanceAsync(
+            repositoryId,
+            symbolId,
+            cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindReferencesAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
@@ -106,6 +138,21 @@ public sealed class CodeGraphQueryService
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Both,
             edgeKinds ?? [], options, cancellationToken);
 
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
+        GetNeighborhoodWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeNodeId nodeId,
+            IReadOnlyCollection<CodeEdgeKind>? edgeKinds = null,
+            CodeGraphQueryOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(
+            repositoryId,
+            nodeId,
+            CodeGraphDirection.Both,
+            edgeKinds ?? [],
+            options,
+            cancellationToken);
+
     public ValueTask<CodeGraphTraversalResult> GetImpactSetAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
@@ -127,6 +174,31 @@ public sealed class CodeGraphQueryService
         return _store.TraverseAsync(
             repositoryId,
             new CodeGraphTraversalQuery(
+                nodeId,
+                direction,
+                edgeKinds,
+                options.EvidenceKinds,
+                options.MaxDepth,
+                options.MaxNodes,
+                options.MaxEdges),
+            cancellationToken);
+    }
+
+    private ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
+        TraverseWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            CodeNodeId nodeId,
+            CodeGraphDirection direction,
+            IReadOnlyCollection<CodeEdgeKind> edgeKinds,
+            CodeGraphQueryOptions? options,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(nodeId);
+        options ??= new();
+        return _store.TraverseWithProvenanceAsync(
+            repositoryId,
+            new(
                 nodeId,
                 direction,
                 edgeKinds,

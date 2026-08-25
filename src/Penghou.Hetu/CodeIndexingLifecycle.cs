@@ -91,13 +91,13 @@ public sealed class CodeIndexingService
 {
     private readonly CodeRepositoryProviderRegistry _repositories;
     private readonly CodeGraphPluginRegistry _plugins;
-    private readonly ICodeGraphStore _store;
+    private readonly ICodeGraphIndexStore _store;
     private readonly TimeProvider _timeProvider;
 
     public CodeIndexingService(
         CodeRepositoryProviderRegistry repositories,
         CodeGraphPluginRegistry plugins,
-        ICodeGraphStore store,
+        ICodeGraphIndexStore store,
         TimeProvider? timeProvider = null)
     {
         _repositories = repositories ?? throw new ArgumentNullException(nameof(repositories));
@@ -176,7 +176,7 @@ public sealed class CodeIndexingService
                 options,
                 cancellationToken).ConfigureAwait(false);
             sourceBytesRead = plan.HashBytesRead +
-                materialized.Values.Sum(source => (long)source.Content.Length);
+                materialized.Values.Distinct().Sum(source => (long)source.Length);
             await using var sink = new CodeGraphIngestionSink(
                 _store,
                 options.BatchLimits,
@@ -240,8 +240,9 @@ public sealed class CodeIndexingService
             {
                 foreach (var unitId in result.ObsoleteIndexUnits)
                 {
-                    await _store.DeleteIndexUnitAsync(
+                    await _store.StageIndexUnitDeletionAsync(
                         descriptor.Id,
+                        runId,
                         plugin.Id,
                         unitId,
                         cancellationToken).ConfigureAwait(false);
@@ -317,7 +318,12 @@ public sealed class CodeIndexingService
                     cancellationToken =>
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        Stream stream = new MemoryStream(source.Content, writable: false);
+                        Stream stream = new MemoryStream(
+                            source.Buffer,
+                            0,
+                            source.Length,
+                            writable: false,
+                            publiclyVisible: false);
                         return new ValueTask<Stream>(stream);
                     });
             })
@@ -452,17 +458,28 @@ public sealed class CodeIndexingService
     {
         var pluginIds = plugins.Select(plugin => plugin.Id).ToHashSet();
         var result = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
+        var sourcesByPath = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
         var totalBytes = plan.HashBytesRead;
+        var buffer = new byte[81920];
         foreach (var item in plan.Items.Where(item =>
                      item.Source is not null && pluginIds.Contains(item.Manifest.PluginId)))
         {
             var entry = item.Source!;
+            if (sourcesByPath.TryGetValue(entry.Path, out var existing))
+            {
+                result.Add(
+                    $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                    existing);
+                continue;
+            }
             if (entry.Length > options.MaxSourceBytes)
                 throw new CodeSourceSizeLimitException(entry.Path, options.MaxSourceBytes, false);
             await using var input = await repository.OpenReadAsync(entry, cancellationToken)
                 .ConfigureAwait(false);
-            await using var output = new MemoryStream();
-            var buffer = new byte[81920];
+            var initialCapacity = entry.Length is >= 0 and <= int.MaxValue
+                ? (int)entry.Length.Value
+                : 0;
+            await using var output = new MemoryStream(initialCapacity);
             while (true)
             {
                 var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
@@ -476,17 +493,20 @@ public sealed class CodeIndexingService
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             }
 
-            var content = output.ToArray();
+            if (!output.TryGetBuffer(out var content))
+                throw new InvalidOperationException("Hetu could not access its materialized source buffer.");
             if (item.Manifest.SourceHash.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
             {
-                var actual = $"sha256:{Convert.ToHexStringLower(SHA256.HashData(content))}";
+                var actual = $"sha256:{Convert.ToHexStringLower(SHA256.HashData(content.AsSpan()))}";
                 if (!string.Equals(actual, item.Manifest.SourceHash, StringComparison.OrdinalIgnoreCase))
                     throw new CodeSourceChangedDuringIndexingException(entry.Path);
             }
 
+            var materialized = new MaterializedSource(content.Array!, content.Count);
+            sourcesByPath.Add(entry.Path, materialized);
             result.Add(
                 $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
-                new MaterializedSource(content));
+                materialized);
         }
 
         return result;
@@ -506,7 +526,7 @@ public sealed class CodeIndexingService
         }
     }
 
-    private sealed record MaterializedSource(byte[] Content);
+    private sealed record MaterializedSource(byte[] Buffer, int Length);
 
     private sealed class PluginScopedSink(
         ICodeGraphSink inner,
