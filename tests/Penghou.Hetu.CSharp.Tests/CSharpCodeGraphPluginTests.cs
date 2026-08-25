@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Reflection;
 
 namespace Penghou.Hetu.CSharp.Tests;
 
@@ -106,6 +107,27 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.DoesNotContain(
             exported.SelectMany(type => type.GetMembers()),
             member => member.ToString()?.Contains("Microsoft.CodeAnalysis", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public void Version_MatchesPackageInformationalVersionWithoutBuildMetadata()
+    {
+        var informational = typeof(CSharpCodeGraphPlugin).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion
+            .Split('+', 2)[0];
+
+        Assert.Equal(informational, new CSharpCodeGraphPlugin().Version);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_DoesNotMislabelSyntaxErrorsAsUnresolvedRelationships()
+    {
+        var extracted = await ExtractAsync(
+            ("src/SyntaxError.cs", "namespace Example; public class Broken { public void M( { }"));
+
+        Assert.Equal(0, extracted.Result.UnresolvedRelationships);
+        Assert.NotEmpty(extracted.Result.WarningCodes);
     }
 
     [Fact]

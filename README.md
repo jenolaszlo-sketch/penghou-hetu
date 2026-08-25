@@ -191,6 +191,12 @@ plugin reports stable Roslyn diagnostic codes rather than compiler messages or
 source content. This first slice intentionally does not evaluate MSBuild; project
 and solution modeling is the next C# milestone slice.
 
+The plugin version comes from its package informational version, so package
+updates naturally invalidate prior source manifests. Unresolved relationship
+counts use a conservative set of missing symbol, namespace, member, and assembly
+diagnostics; syntax errors remain visible as warning codes without being
+misclassified as relationship failures.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

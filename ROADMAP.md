@@ -316,6 +316,9 @@ Completed initial structural slice:
   relationships;
 - bounded batch emission under one repository-aware C# index unit;
 - privacy-safe Roslyn diagnostic codes and unresolved-error counts;
+- package-derived plugin versions for automatic release invalidation and a
+  conservative unresolved-symbol diagnostic classification that does not label
+  syntax errors as unresolved relationships;
 - direct multi-file, partial-type, overload, determinism, public-boundary, and
   full filesystem-to-store lifecycle tests.
 

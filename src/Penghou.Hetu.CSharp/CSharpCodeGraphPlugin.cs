@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Reflection;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -9,8 +10,22 @@ namespace Penghou.Hetu;
 /// <summary>Deterministic repository-aware C# extraction powered by Roslyn.</summary>
 public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
 {
+    private static readonly HashSet<string> UnresolvedDiagnosticIds =
+        new(StringComparer.Ordinal)
+        {
+            "CS0012", // referenced assembly is missing
+            "CS0103", // name does not exist in the current context
+            "CS0234", // namespace member is missing
+            "CS0246", // type or namespace cannot be found
+            "CS0400", // type or namespace cannot be found in the global namespace
+            "CS0426", // nested type does not exist
+            "CS0518", // predefined type is not defined or imported
+            "CS1061"  // member or extension method cannot be found
+        };
+    private static readonly string PackageVersion = GetPackageVersion();
+
     public CodePluginId Id { get; } = new("penghou.hetu.csharp");
-    public string Version => "0.1.0-preview.1";
+    public string Version => PackageVersion;
     public string Language => "csharp";
     public IReadOnlyCollection<string> FileExtensions => [".cs"];
     public CodeGraphCapabilities Capabilities =>
@@ -90,7 +105,8 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                 sourcesExamined: context.Sources.Count,
                 sourcesContributingFacts: builder.ContributingSources,
                 unresolvedRelationships: diagnostics.Count(diagnostic =>
-                    diagnostic.Severity == DiagnosticSeverity.Error),
+                    diagnostic.Severity == DiagnosticSeverity.Error &&
+                    UnresolvedDiagnosticIds.Contains(diagnostic.Id)),
                 warningCodes: warningCodes);
         }
 
@@ -371,5 +387,17 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
             .Order(StringComparer.OrdinalIgnoreCase)
             .Select(path => MetadataReference.CreateFromFile(path))
             .ToArray();
+    }
+
+    private static string GetPackageVersion()
+    {
+        var assembly = typeof(CSharpCodeGraphPlugin).Assembly;
+        var informational = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informational))
+            return informational.Split('+', 2)[0];
+
+        return assembly.GetName().Version?.ToString(3) ?? "0.0.0";
     }
 }
