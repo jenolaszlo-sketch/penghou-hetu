@@ -408,14 +408,15 @@ Completed durable-provider foundation:
   qualified-name, evidence-filter, and bounded traversal queries;
 - the complete `ICodeGraphStore` surface with deterministic provider-neutral
   materialization semantics across process restart;
-- health reporting plus conformance and durable-reopen integration tests when
-  the native engine is available.
+- health reporting plus required native conformance and durable-reopen
+  integration tests.
 
-Before calling the optimized Ladybug milestone complete:
+Ongoing release gates:
 
-- run the provider conformance suite in CI with every supported native runtime;
-- benchmark ingestion, replacement, reopen, traversal, and deletion before
-  selecting indexes or denormalized projections.
+- run the shared provider conformance suite on Windows, Linux, and macOS through
+  the native-package CI matrix;
+- retain the BenchmarkDotNet baseline for ingestion, replacement, reopen,
+  traversal, and deletion when changing projections or native versions.
 
 ## Milestone 7 — incremental correctness and resilience
 
@@ -446,8 +447,9 @@ Covered so far:
 
 The normalized Ladybug schema additionally covers incompatible schema versions,
 corrupted durable payloads, full graph/run/state restart, and injected native
-transaction interruption with rollback. Large-store replacement and traversal
-benchmarks remain as the final resilience gate.
+transaction interruption with rollback. Reproducible 100- and 1,000-node
+replacement, lookup, bounded-traversal, deletion, and reopen baselines are
+recorded in `BENCHMARKS.md`.
 
 ## Milestone 8 — dogfood with Solo
 

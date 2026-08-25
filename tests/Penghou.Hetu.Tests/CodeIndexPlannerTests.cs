@@ -56,6 +56,25 @@ public sealed class CodeIndexPlannerTests
     }
 
     [Fact]
+    public async Task CreatePlan_RepresentsMovedSourceAsDeletedAndNewWithoutGuessingIdentity()
+    {
+        await using var source = new MemorySource(
+            new Dictionary<string, string> { ["New/Widget.cs"] = "same content" });
+        var plugin = new FakePlugin("1.0.0");
+
+        var plan = await new CodeIndexPlanner(new([plugin])).CreatePlanAsync(
+            source,
+            [Manifest(plugin, "Old/Widget.cs", Hash("same content"))]);
+
+        Assert.Equal(
+            [
+                ("New/Widget.cs", CodeIndexPlanStatus.New),
+                ("Old/Widget.cs", CodeIndexPlanStatus.Deleted)
+            ],
+            plan.Items.Select(item => (item.Manifest.SourcePath, item.Status)));
+    }
+
+    [Fact]
     public async Task CreatePlan_UsesProviderHashWithoutOpeningContent()
     {
         await using var source = new MemorySource(

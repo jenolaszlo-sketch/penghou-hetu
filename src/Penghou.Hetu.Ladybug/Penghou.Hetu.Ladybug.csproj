@@ -14,7 +14,22 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackageId>Penghou.Hetu.Ladybug</PackageId>
+    <Title>Penghou Hetu Ladybug Provider</Title>
+    <Authors>Penghou.Hetu contributors</Authors>
     <Description>Durable embedded LadybugDB graph store provider for Penghou.Hetu.</Description>
+    <PackageTags>ladybugdb;graph-database;code-analysis;knowledge-graph</PackageTags>
+    <RepositoryUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsPackable>true</IsPackable>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

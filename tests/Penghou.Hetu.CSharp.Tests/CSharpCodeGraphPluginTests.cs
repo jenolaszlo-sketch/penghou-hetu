@@ -163,6 +163,20 @@ public sealed class CSharpCodeGraphPluginTests
             Assert.Equal(1, first.Diagnostics.PluginsExecuted);
             Assert.Equal(0, second.Diagnostics.PluginsExecuted);
             Assert.Equal(2, second.Diagnostics.FilesUnchanged);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "One.cs"),
+                "namespace Example; public partial class Widget { public void One() { } public void Three() { } }");
+            var third = await indexing.IndexAsync(descriptor, new("run:partial-change"));
+            widget = Assert.Single(
+                await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Widget"));
+            Assert.Equal(
+                2,
+                (await store.GetDeclarationsAsync(repositoryId, widget.SymbolId!)).Count);
+            Assert.Single(
+                await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Widget.Three()"));
+            Assert.Equal(1, third.Diagnostics.FilesChanged);
+            Assert.Equal(1, third.Diagnostics.FilesUnchanged);
         }
         finally
         {
@@ -215,6 +229,58 @@ public sealed class CSharpCodeGraphPluginTests
             Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "@loose/csharp"));
             Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Enabled"));
             Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Always"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexingLifecycle_ChangedProjectReferenceRemovesDependencyEdge()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-reference-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "Lib"));
+        Directory.CreateDirectory(Path.Combine(root, "App"));
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "Lib", "Lib.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "Lib", "Value.cs"),
+                "namespace Lib; public class Value { }");
+            var appProjectPath = Path.Combine(root, "App", "App.csproj");
+            await File.WriteAllTextAsync(appProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "App", "Application.cs"),
+                "namespace App; public class Application { }");
+            var repositoryId = new CodeRepositoryId("repo:csharp-reference-change");
+            var store = new InMemoryCodeGraphStore();
+            var indexing = new CodeIndexingService(
+                new CodeRepositoryProviderRegistry([new FileSystemCodeRepositoryProvider()]),
+                new CodeGraphPluginRegistry([new CSharpCodeGraphPlugin()]),
+                store);
+            var descriptor = new CodeRepositoryDescriptor(repositoryId, root);
+
+            await indexing.IndexAsync(descriptor, new("run:with-reference"));
+            var app = Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "App/App.csproj"));
+            var withReference = await store.TraverseAsync(
+                repositoryId,
+                new(app.Id, edgeKinds: [CodeEdgeKinds.DependsOn]));
+            Assert.Single(withReference.Edges);
+
+            await File.WriteAllTextAsync(appProjectPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await indexing.IndexAsync(descriptor, new("run:without-reference"));
+            app = Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "App/App.csproj"));
+            var withoutReference = await store.TraverseAsync(
+                repositoryId,
+                new(app.Id, edgeKinds: [CodeEdgeKinds.DependsOn]));
+            Assert.Empty(withoutReference.Edges);
         }
         finally
         {

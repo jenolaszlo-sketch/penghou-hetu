@@ -7,11 +7,23 @@ namespace Penghou.Hetu.Ladybug.Tests;
 public sealed class LadybugCodeGraphStoreTests
 {
     [Fact]
+    public void PublicApi_IsIntentional()
+    {
+        Assert.Equal(
+            [
+                typeof(LadybugCodeGraphSchemaException),
+                typeof(LadybugCodeGraphStore),
+                typeof(LadybugCodeGraphStoreHealth)
+            ],
+            typeof(LadybugCodeGraphStore).Assembly.GetExportedTypes()
+                .OrderBy(type => type.FullName, StringComparer.Ordinal));
+    }
+
+    [Fact]
     public async Task Store_PassesProviderConformanceSuite()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         var fixture = new Fixture(path);
         try
         {
@@ -32,8 +44,7 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensDurableState()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:durable");
         try
         {
@@ -63,8 +74,7 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensCompletedRunIndexStateAndGraphFacts()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:full-reopen");
         var runId = new CodeIndexRunId("run:full-reopen");
         var pluginId = new CodePluginId("plugin:full-reopen");
@@ -110,8 +120,7 @@ public sealed class LadybugCodeGraphStoreTests
     public void Store_RejectsIncompatibleSchemaVersion()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         try
         {
             using (var database = new Database(path))
@@ -135,8 +144,7 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_RejectsCorruptedDurablePayloadOnReopen()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         try
         {
             using (var first = new LadybugCodeGraphStore(path))
@@ -159,8 +167,7 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_RollsBackInterruptedNativeTransactionAndReopensPriorUnit()
     {
         var path = TemporaryDatabasePath();
-        if (!NativeRuntimeIsAvailable(path))
-            return;
+        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:rollback");
         var runId = new CodeIndexRunId("run:rollback");
         var pluginId = new CodePluginId("plugin:rollback");
@@ -204,18 +211,13 @@ public sealed class LadybugCodeGraphStoreTests
     private static string TemporaryDatabasePath() =>
         Path.Combine(Path.GetTempPath(), $"hetu-ladybug-{Guid.NewGuid():N}");
 
-    private static bool NativeRuntimeIsAvailable(string path)
+    private static void EnsureNativeRuntime(string path)
     {
         LoadWindowsOpenSslDependency("libcrypto-3-x64.dll");
         LoadWindowsOpenSslDependency("libssl-3-x64.dll");
         try
         {
             using var store = new LadybugCodeGraphStore(path);
-            return true;
-        }
-        catch (DllNotFoundException)
-        {
-            return false;
         }
         finally
         {

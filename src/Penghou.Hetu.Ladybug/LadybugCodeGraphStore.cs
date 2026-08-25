@@ -7,7 +7,7 @@ namespace Penghou.Hetu;
 /// <summary>Durable embedded Hetu store backed by LadybugDB.</summary>
 public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     private readonly Database _database;
     private readonly Connection _connection;
@@ -167,7 +167,7 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             await ApplyCommandAsync(_inner, command, cancellationToken).ConfigureAwait(false);
             try
             {
-                Persist(command);
+                Persist(command, next);
                 _commands = next;
                 _inner = await ReplayAsync(next, CancellationToken.None).ConfigureAwait(false);
             }
@@ -183,8 +183,9 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         }
     }
 
-    private void Persist(PersistedCommand command)
+    private void Persist(PersistedCommand command, IReadOnlyList<PersistedCommand> next)
     {
+        var affectedAdjacency = AffectedAdjacencyNodes(_commands, command);
         Execute("BEGIN TRANSACTION");
         try
         {
@@ -207,6 +208,8 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
                     break;
                 default: throw new InvalidDataException($"Unknown persisted Hetu command '{command.Kind}'.");
             }
+            if (affectedAdjacency.Count > 0)
+                UpdateAdjacency(next, affectedAdjacency);
             _faultInjector?.Invoke("before-commit");
             Execute("COMMIT");
         }
@@ -259,6 +262,7 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuNode(key STRING, repositoryId STRING, unitKey STRING, nodeId STRING, symbolId STRING, qualifiedName STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuDeclaration(key STRING, repositoryId STRING, unitKey STRING, declarationId STRING, symbolId STRING, payload STRING, PRIMARY KEY(key))");
         Execute("CREATE NODE TABLE IF NOT EXISTS HetuEdge(key STRING, repositoryId STRING, unitKey STRING, edgeId STRING, sourceId STRING, targetId STRING, kind STRING, evidenceKind INT64, payload STRING, PRIMARY KEY(key))");
+        Execute("CREATE NODE TABLE IF NOT EXISTS HetuAdjacency(key STRING, payload STRING, PRIMARY KEY(key))");
     }
 
     private IEnumerable<T> ReadPayloads<T>(string table)
@@ -282,21 +286,22 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 
     private void ReplaceFacts(CodeIndexUnitReplacement replacement)
     {
+        const int statementBatchSize = 100;
         var unitKey = UnitKey(replacement.Origin);
         DeleteFacts(unitKey);
         var repositoryId = Key(replacement.Origin.RepositoryId.Value);
-        foreach (var node in replacement.Nodes)
-        {
-            Execute($"CREATE (:HetuNode {{key: '{FactKey(unitKey, node.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', nodeId: '{Key(node.Id.Value)}', symbolId: '{Key(node.SymbolId?.Value ?? string.Empty)}', qualifiedName: '{Key(node.QualifiedName ?? string.Empty)}', payload: '{Serialize(node)}'}})");
-        }
-        foreach (var declaration in replacement.Declarations)
-        {
-            Execute($"CREATE (:HetuDeclaration {{key: '{FactKey(unitKey, declaration.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', declarationId: '{Key(declaration.Id.Value)}', symbolId: '{Key(declaration.SymbolId.Value)}', payload: '{Serialize(declaration)}'}})");
-        }
-        foreach (var edge in replacement.Edges)
-        {
-            Execute($"CREATE (:HetuEdge {{key: '{FactKey(unitKey, edge.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', edgeId: '{Key(edge.Id.Value)}', sourceId: '{Key(edge.SourceId.Value)}', targetId: '{Key(edge.TargetId.Value)}', kind: '{Key(edge.Kind.Value)}', evidenceKind: {(int)edge.Evidence.Kind}, payload: '{Serialize(edge)}'}})");
-        }
+        ExecuteCreates(replacement.Nodes.Select(node =>
+            $"(:HetuNode {{key: '{FactKey(unitKey, node.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', nodeId: '{Key(node.Id.Value)}', symbolId: '{Key(node.SymbolId?.Value ?? string.Empty)}', qualifiedName: '{Key(node.QualifiedName ?? string.Empty)}', payload: '{Serialize(node)}'}})"), statementBatchSize);
+        ExecuteCreates(replacement.Declarations.Select(declaration =>
+            $"(:HetuDeclaration {{key: '{FactKey(unitKey, declaration.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', declarationId: '{Key(declaration.Id.Value)}', symbolId: '{Key(declaration.SymbolId.Value)}', payload: '{Serialize(declaration)}'}})"), statementBatchSize);
+        ExecuteCreates(replacement.Edges.Select(edge =>
+            $"(:HetuEdge {{key: '{FactKey(unitKey, edge.Id.Value)}', repositoryId: '{repositoryId}', unitKey: '{unitKey}', edgeId: '{Key(edge.Id.Value)}', sourceId: '{Key(edge.SourceId.Value)}', targetId: '{Key(edge.TargetId.Value)}', kind: '{Key(edge.Kind.Value)}', evidenceKind: {(int)edge.Evidence.Kind}, payload: '{Serialize(edge)}'}})"), statementBatchSize);
+    }
+
+    private void ExecuteCreates(IEnumerable<string> patterns, int batchSize)
+    {
+        foreach (var batch in patterns.Chunk(batchSize))
+            Execute("CREATE " + string.Join(", ", batch));
     }
 
     private void DeleteFacts(string unitKey)
@@ -325,23 +330,18 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         CodeNodeId nodeId,
         CodeGraphTraversalQuery query)
     {
-        var encodedNode = Key(nodeId.Value);
-        var direction = query.Direction switch
+        var directions = query.Direction switch
         {
-            CodeGraphDirection.Outgoing => $"s.sourceId = '{encodedNode}'",
-            CodeGraphDirection.Incoming => $"s.targetId = '{encodedNode}'",
-            CodeGraphDirection.Both => $"(s.sourceId = '{encodedNode}' OR s.targetId = '{encodedNode}')",
+            CodeGraphDirection.Outgoing => new[] { "out" },
+            CodeGraphDirection.Incoming => new[] { "in" },
+            CodeGraphDirection.Both => new[] { "out", "in" },
             _ => throw new ArgumentOutOfRangeException(nameof(query))
         };
-        var kinds = query.EdgeKinds.Count == 0
-            ? string.Empty
-            : " AND (" + string.Join(" OR ", query.EdgeKinds.Select(kind => $"s.kind = '{Key(kind.Value)}'")) + ")";
-        var evidence = query.EvidenceKinds.Count == 0
-            ? string.Empty
-            : " AND (" + string.Join(" OR ", query.EvidenceKinds.Select(kind => $"s.evidenceKind = {(int)kind}")) + ")";
-        return ReadMany<CodeGraphEdge>(
-                "HetuEdge",
-                $"s.repositoryId = '{Key(repositoryId.Value)}' AND {direction}{kinds}{evidence}")
+        var edges = directions.SelectMany(direction =>
+            ReadAdjacency(AdjacencyKey(repositoryId, nodeId, direction)));
+        return edges
+            .Where(edge => query.EdgeKinds.Count == 0 || query.EdgeKinds.Contains(edge.Kind))
+            .Where(edge => query.EvidenceKinds.Count == 0 || query.EvidenceKinds.Contains(edge.Evidence.Kind))
             .GroupBy(edge => edge.Id)
             .Select(group => group.First())
             .OrderBy(edge => edge.Kind.Value, StringComparer.Ordinal)
@@ -349,6 +349,90 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             .ThenBy(edge => edge.TargetId.Value, StringComparer.Ordinal)
             .ThenBy(edge => edge.Id.Value, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private IReadOnlyList<CodeGraphEdge> ReadAdjacency(string key)
+    {
+        using var result = _connection.Query($"MATCH (s:HetuAdjacency) WHERE s.key = '{key}' RETURN s.payload");
+        var row = result.Rows().FirstOrDefault();
+        if (row is null)
+            return [];
+        var payload = row[0]?.ToString() ?? throw new InvalidDataException("Ladybug adjacency payload is missing.");
+        return JsonSerializer.Deserialize<IReadOnlyList<CodeGraphEdge>>(
+            Convert.FromBase64String(payload), SerializerOptions) ??
+            throw new InvalidDataException("Ladybug adjacency payload is invalid.");
+    }
+
+    private void UpdateAdjacency(
+        IReadOnlyList<PersistedCommand> commands,
+        IReadOnlySet<(string RepositoryId, string NodeId)> affected)
+    {
+        const int statementBatchSize = 100;
+        var edges = commands
+            .Where(command => command.Kind == "replace")
+            .SelectMany(command => command.Replacement!.Edges.Select(edge =>
+                (RepositoryId: command.Replacement.Origin.RepositoryId.Value, Edge: edge)))
+            .GroupBy(value => $"{value.RepositoryId}\n{value.Edge.Id.Value}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+        var records = new List<(string Key, string? Payload)>();
+        foreach (var (repositoryId, nodeId) in affected.OrderBy(value => value.RepositoryId, StringComparer.Ordinal)
+                     .ThenBy(value => value.NodeId, StringComparer.Ordinal))
+        {
+            var repository = new CodeRepositoryId(repositoryId);
+            var node = new CodeNodeId(nodeId);
+            records.Add(AdjacencyRecord(repository, node, "out", edges
+                .Where(value => value.RepositoryId == repositoryId && value.Edge.SourceId == node)
+                .Select(value => value.Edge)));
+            records.Add(AdjacencyRecord(repository, node, "in", edges
+                .Where(value => value.RepositoryId == repositoryId && value.Edge.TargetId == node)
+                .Select(value => value.Edge)));
+        }
+        foreach (var batch in records.Chunk(statementBatchSize))
+        {
+            Execute("MATCH (s:HetuAdjacency) WHERE " +
+                string.Join(" OR ", batch.Select(record => $"s.key = '{record.Key}'")) +
+                " DELETE s");
+            var populated = batch.Where(record => record.Payload is not null).ToArray();
+            if (populated.Length > 0)
+            {
+                Execute("CREATE " + string.Join(", ", populated.Select(record =>
+                    $"(:HetuAdjacency {{key: '{record.Key}', payload: '{record.Payload}'}})")));
+            }
+        }
+    }
+
+    private static (string Key, string? Payload) AdjacencyRecord(
+        CodeRepositoryId repositoryId,
+        CodeNodeId nodeId,
+        string direction,
+        IEnumerable<CodeGraphEdge> edges)
+    {
+        var key = AdjacencyKey(repositoryId, nodeId, direction);
+        var values = edges.OrderBy(edge => edge.Kind.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.SourceId.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.TargetId.Value, StringComparer.Ordinal)
+            .ThenBy(edge => edge.Id.Value, StringComparer.Ordinal).ToArray();
+        return (key, values.Length == 0 ? null : Serialize(values));
+    }
+
+    private static HashSet<(string RepositoryId, string NodeId)> AffectedAdjacencyNodes(
+        IReadOnlyList<PersistedCommand> current,
+        PersistedCommand command)
+    {
+        var affected = new HashSet<(string, string)>();
+        IEnumerable<CodeIndexUnitReplacement> replacements = current
+            .Where(existing => existing.Kind == "replace" && SameSlot(existing, command))
+            .Select(existing => existing.Replacement!);
+        if (command.Kind == "replace")
+            replacements = replacements.Append(command.Replacement!);
+        foreach (var replacement in replacements)
+            foreach (var edge in replacement.Edges)
+            {
+                affected.Add((replacement.Origin.RepositoryId.Value, edge.SourceId.Value));
+                affected.Add((replacement.Origin.RepositoryId.Value, edge.TargetId.Value));
+            }
+        return affected;
     }
 
     private int Count(string table)
@@ -363,6 +447,8 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
     private static string RunKey(CodeIndexRunManifest run) => Key($"{run.RepositoryId.Value}\n{run.Id.Value}");
     private static string UnitKey(CodeFactOrigin origin) => UnitKey(origin.RepositoryId, origin.PluginId, origin.IndexUnitId);
     private static string FactKey(string unitKey, string factId) => Key($"{unitKey}\n{factId}");
+    private static string AdjacencyKey(CodeRepositoryId repositoryId, CodeNodeId nodeId, string direction) =>
+        Key($"{repositoryId.Value}\n{direction}\n{nodeId.Value}");
     private static string UnitKey(CodeRepositoryId repositoryId, CodePluginId pluginId, CodeIndexUnitId unitId) =>
         Key($"{repositoryId.Value}\n{pluginId.Value}\n{unitId.Value}");
 
