@@ -87,6 +87,121 @@ public sealed class CodeIndexingServiceTests
         Assert.Null(await store.GetLatestIndexStateAsync(descriptor.Id));
     }
 
+    [Fact]
+    public async Task IndexAsync_SkipsPluginWhenEverySourceIsUnchanged()
+    {
+        var provider = new MemoryProvider(
+            new Dictionary<string, string> { ["src/Example.cs"] = "content" });
+        var plugin = new LifecyclePlugin();
+        var store = new InMemoryCodeGraphStore();
+        var service = Service(provider, plugin, store);
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+        await service.IndexAsync(descriptor, new("run:first"));
+
+        var second = await service.IndexAsync(descriptor, new("run:second"));
+
+        Assert.Equal(1, plugin.ExecutionCount);
+        Assert.Equal(0, second.Diagnostics.PluginsExecuted);
+        Assert.Equal(Encoding.UTF8.GetByteCount("content"), second.Diagnostics.SourceBytesRead);
+        Assert.Equal(3, provider.OpenCount);
+        Assert.Equal(1, second.Diagnostics.FilesUnchanged);
+    }
+
+    [Fact]
+    public async Task IndexAsync_RejectsBatchOutsideExecutingPluginScope()
+    {
+        var provider = new MemoryProvider(
+            new Dictionary<string, string> { ["src/Example.cs"] = "content" });
+        var plugin = new LifecyclePlugin { EmitForeignOrigin = true };
+        var store = new InMemoryCodeGraphStore();
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+
+        var exception = await Assert.ThrowsAsync<CodeGraphBatchRejectedException>(async () =>
+            await Service(provider, plugin, store).IndexAsync(descriptor, new("run:foreign")));
+
+        Assert.Contains(exception.Errors, error => error.Code == "lifecycle.batch.ownership-mismatch");
+        Assert.Equal(
+            CodeIndexRunStatus.Failed,
+            (await store.GetIndexRunAsync(descriptor.Id, new("run:foreign")))!.Status);
+    }
+
+    [Fact]
+    public async Task IndexAsync_DetectsSourceChangedAfterPlanning()
+    {
+        var provider = new MemoryProvider(
+            new Dictionary<string, string> { ["src/Example.cs"] = "first" })
+        {
+            ChangeContentOnSecondOpen = true
+        };
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+
+        await Assert.ThrowsAsync<CodeSourceChangedDuringIndexingException>(async () =>
+            await Service(provider, new LifecyclePlugin(), new InMemoryCodeGraphStore())
+                .IndexAsync(descriptor, new("run:changed")));
+    }
+
+    [Fact]
+    public async Task IndexAsync_EnforcesPerSourceByteLimit()
+    {
+        var provider = new MemoryProvider(
+            new Dictionary<string, string> { ["src/Example.cs"] = "too-large" });
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+        var options = new CodeIndexingOptions(maxSourceBytes: 4, maxTotalSourceBytes: 8);
+
+        var exception = await Assert.ThrowsAsync<CodeSourceSizeLimitException>(async () =>
+            await Service(provider, new LifecyclePlugin(), new InMemoryCodeGraphStore())
+                .IndexAsync(descriptor, new("run:large"), options));
+
+        Assert.False(exception.IsTotalLimit);
+        Assert.Equal(4, exception.MaximumBytes);
+    }
+
+    [Fact]
+    public async Task IndexAsync_EnforcesTotalHashByteLimit()
+    {
+        var provider = new MemoryProvider(new Dictionary<string, string>
+        {
+            ["src/One.cs"] = "123456",
+            ["src/Two.cs"] = "abcdef"
+        });
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+        var options = new CodeIndexingOptions(maxSourceBytes: 8, maxTotalSourceBytes: 10);
+
+        var exception = await Assert.ThrowsAsync<CodeSourceSizeLimitException>(async () =>
+            await Service(provider, new LifecyclePlugin(), new InMemoryCodeGraphStore())
+                .IndexAsync(descriptor, new("run:large-total"), options));
+
+        Assert.True(exception.IsTotalLimit);
+    }
+
+    [Fact]
+    public async Task IndexAsync_ExecutesPluginsInParallelWithinConfiguredBound()
+    {
+        var provider = new MemoryProvider(new Dictionary<string, string>
+        {
+            ["src/Example.cs"] = "csharp",
+            ["src/Example.ts"] = "typescript"
+        });
+        var probe = new ConcurrencyProbe(expectedConcurrency: 2);
+        ICodeGraphPlugin[] plugins =
+        [
+            new ConcurrentPlugin("plugin:csharp", ".cs", probe),
+            new ConcurrentPlugin("plugin:typescript", ".ts", probe)
+        ];
+        var service = new CodeIndexingService(
+            new CodeRepositoryProviderRegistry([provider]),
+            new CodeGraphPluginRegistry(plugins),
+            new InMemoryCodeGraphStore());
+
+        var result = await service.IndexAsync(
+            new CodeRepositoryDescriptor(new("repo:test"), "memory://test"),
+            new CodeIndexRunId("run:parallel"),
+            new CodeIndexingOptions(maxConcurrentPlugins: 2));
+
+        Assert.Equal(2, probe.MaximumObserved);
+        Assert.Equal(2, result.Diagnostics.PluginsExecuted);
+    }
+
     private static CodeIndexingService Service(
         MemoryProvider provider,
         LifecyclePlugin plugin,
@@ -102,6 +217,8 @@ public sealed class CodeIndexingServiceTests
         public CodeGraphCapabilities Capabilities => CodeGraphCapabilities.Syntax;
         public bool Fail { get; set; }
         public bool Cancel { get; set; }
+        public bool EmitForeignOrigin { get; set; }
+        public int ExecutionCount { get; private set; }
         public IReadOnlyList<CodeGraphSourceChange> LastChanges { get; private set; } = [];
 
         public bool CanHandle(string path) => path.EndsWith(".cs", StringComparison.Ordinal);
@@ -122,6 +239,7 @@ public sealed class CodeIndexingServiceTests
                 ICodeGraphSink sink,
                 CancellationToken cancellationToken = default)
             {
+                plugin.ExecutionCount++;
                 if (plugin.Fail)
                     throw new InvalidOperationException("plugin failure");
                 if (plugin.Cancel)
@@ -131,7 +249,7 @@ public sealed class CodeIndexingServiceTests
 
                 var origin = new CodeFactOrigin(
                     context.RepositoryId,
-                    plugin.Id,
+                    plugin.EmitForeignOrigin ? new CodePluginId("plugin:foreign") : plugin.Id,
                     plugin.Version,
                     context.IndexRunId,
                     new CodeIndexUnitId("unit:example"));
@@ -156,16 +274,30 @@ public sealed class CodeIndexingServiceTests
 
     private sealed class MemoryProvider(Dictionary<string, string> files) : ICodeRepositoryProvider
     {
+        private int _openCount;
+
         public string Name => "memory";
+        public bool ChangeContentOnSecondOpen { get; init; }
+        public int OpenCount => _openCount;
         public bool CanOpen(CodeRepositoryDescriptor repository) =>
             repository.Location.StartsWith("memory://", StringComparison.Ordinal);
         public ValueTask<ICodeRepositorySource> OpenAsync(
             CodeRepositoryDescriptor repository,
             CancellationToken cancellationToken = default) =>
-            new(new Source(repository.Id, files));
+            new(new Source(repository.Id, this, files));
+
+        private Stream Open(CodeRepositoryEntry entry)
+        {
+            var content = files[entry.Path];
+            var openCount = Interlocked.Increment(ref _openCount);
+            if (ChangeContentOnSecondOpen && openCount == 2)
+                content += "-changed";
+            return new MemoryStream(Encoding.UTF8.GetBytes(content));
+        }
 
         private sealed class Source(
             CodeRepositoryId repositoryId,
+            MemoryProvider provider,
             Dictionary<string, string> files) : ICodeRepositorySource
         {
             public CodeRepositoryId RepositoryId { get; } = repositoryId;
@@ -190,11 +322,90 @@ public sealed class CodeIndexingServiceTests
                 CancellationToken cancellationToken = default)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Stream stream = new MemoryStream(Encoding.UTF8.GetBytes(files[entry.Path]));
-                return new(stream);
+                return new(provider.Open(entry));
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class ConcurrentPlugin(
+        string id,
+        string extension,
+        ConcurrencyProbe probe) : ICodeGraphPlugin
+    {
+        public CodePluginId Id { get; } = new(id);
+        public string Version => "1.0.0";
+        public string Language => id;
+        public IReadOnlyCollection<string> FileExtensions => [extension];
+        public CodeGraphCapabilities Capabilities => CodeGraphCapabilities.Syntax;
+        public bool CanHandle(string path) => path.EndsWith(extension, StringComparison.Ordinal);
+
+        public ValueTask<ICodeGraphExtractionSession> CreateSessionAsync(
+            CodeGraphPluginContext context,
+            CancellationToken cancellationToken = default) =>
+            new(new Session(context, this, probe));
+
+        private sealed class Session(
+            CodeGraphPluginContext context,
+            ConcurrentPlugin plugin,
+            ConcurrencyProbe probe) : ICodeGraphExtractionSession
+        {
+            public async ValueTask<CodeGraphExtractionResult> ExtractAsync(
+                ICodeGraphSink sink,
+                CancellationToken cancellationToken = default)
+            {
+                await probe.EnterAsync(cancellationToken);
+                try
+                {
+                    await sink.WriteBatchAsync(
+                        new CodeGraphBatch(
+                            new CodeFactOrigin(
+                                context.RepositoryId,
+                                plugin.Id,
+                                plugin.Version,
+                                context.IndexRunId,
+                                new CodeIndexUnitId($"unit:{plugin.Id.Value}")),
+                            completesIndexUnit: true),
+                        cancellationToken);
+                    return new();
+                }
+                finally
+                {
+                    probe.Exit();
+                }
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class ConcurrencyProbe(int expectedConcurrency)
+    {
+        private readonly TaskCompletionSource _reached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _active;
+        private int _maximumObserved;
+
+        public int MaximumObserved => _maximumObserved;
+
+        public async ValueTask EnterAsync(CancellationToken cancellationToken)
+        {
+            var active = Interlocked.Increment(ref _active);
+            int observed;
+            do
+            {
+                observed = _maximumObserved;
+                if (active <= observed)
+                    break;
+            }
+            while (Interlocked.CompareExchange(ref _maximumObserved, active, observed) != observed);
+
+            if (active >= expectedConcurrency)
+                _reached.TrySetResult();
+            await _reached.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+
+        public void Exit() => Interlocked.Decrement(ref _active);
     }
 }

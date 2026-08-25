@@ -100,7 +100,8 @@ public sealed record CodeRepositoryEnumerationOptions
     public CodeRepositoryEnumerationOptions(
         IReadOnlyCollection<string>? excludedDirectoryNames = null,
         int maxDepth = 64,
-        int maxEntries = 1_000_000)
+        int maxEntries = 1_000_000,
+        Action<CodeRepositoryDiscoveryEventKind>? observer = null)
     {
         if (maxDepth < 0)
             throw new ArgumentOutOfRangeException(nameof(maxDepth));
@@ -125,11 +126,35 @@ public sealed record CodeRepositoryEnumerationOptions
             .ToArray();
         MaxDepth = maxDepth;
         MaxEntries = maxEntries;
+        Observer = observer;
     }
 
     public IReadOnlyCollection<string> ExcludedDirectoryNames { get; }
     public int MaxDepth { get; }
     public int MaxEntries { get; }
+    internal Action<CodeRepositoryDiscoveryEventKind>? Observer { get; }
+
+    /// <summary>Reports privacy-safe discovery outcomes to an optional host observer.</summary>
+    public void Report(CodeRepositoryDiscoveryEventKind kind)
+    {
+        if (!Enum.IsDefined(kind))
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        try
+        {
+            Observer?.Invoke(kind);
+        }
+        catch
+        {
+            // Discovery observers must not affect repository enumeration.
+        }
+    }
+}
+
+public enum CodeRepositoryDiscoveryEventKind
+{
+    DirectoryExcluded = 0,
+    DepthLimitReached = 1,
+    ReparsePointSkipped = 2
 }
 
 /// <summary>Lazy provider-neutral access to one repository snapshot or live view.</summary>
@@ -257,9 +282,19 @@ internal sealed class FileSystemCodeRepositorySource(
                 var isReparsePoint = attributes.HasFlag(FileAttributes.ReparsePoint);
                 if (isDirectory)
                 {
-                    if (depth < options.MaxDepth &&
-                        !exclusions.Contains(Path.GetFileName(path)) &&
-                        !isReparsePoint)
+                    if (isReparsePoint)
+                    {
+                        options.Report(CodeRepositoryDiscoveryEventKind.ReparsePointSkipped);
+                    }
+                    else if (exclusions.Contains(Path.GetFileName(path)))
+                    {
+                        options.Report(CodeRepositoryDiscoveryEventKind.DirectoryExcluded);
+                    }
+                    else if (depth >= options.MaxDepth)
+                    {
+                        options.Report(CodeRepositoryDiscoveryEventKind.DepthLimitReached);
+                    }
+                    else
                     {
                         childDirectories.Add(path);
                     }
@@ -268,7 +303,10 @@ internal sealed class FileSystemCodeRepositorySource(
                 }
 
                 if (isReparsePoint)
+                {
+                    options.Report(CodeRepositoryDiscoveryEventKind.ReparsePointSkipped);
                     continue;
+                }
                 count++;
                 if (count > options.MaxEntries)
                 {

@@ -40,15 +40,42 @@ public sealed record CodeIndexPlanItem
 /// <summary>Immutable incremental work plan ordered by plugin and source path.</summary>
 public sealed record CodeIndexPlan
 {
-    public CodeIndexPlan(IReadOnlyList<CodeIndexPlanItem> items)
+    public CodeIndexPlan(
+        IReadOnlyList<CodeIndexPlanItem> items,
+        int repositoryEntries = 0,
+        int unsupportedEntries = 0,
+        long hashBytesRead = 0,
+        int excludedDirectories = 0,
+        int depthLimitedDirectories = 0,
+        int reparsePointsSkipped = 0)
     {
         ArgumentNullException.ThrowIfNull(items);
         if (items.Any(item => item is null))
             throw new ArgumentException("Index plans cannot contain null items.", nameof(items));
+        if (repositoryEntries < 0)
+            throw new ArgumentOutOfRangeException(nameof(repositoryEntries));
+        if (unsupportedEntries < 0 || unsupportedEntries > repositoryEntries)
+            throw new ArgumentOutOfRangeException(nameof(unsupportedEntries));
+        if (hashBytesRead < 0)
+            throw new ArgumentOutOfRangeException(nameof(hashBytesRead));
+        if (excludedDirectories < 0 || depthLimitedDirectories < 0 || reparsePointsSkipped < 0)
+            throw new ArgumentOutOfRangeException(nameof(excludedDirectories));
         Items = items.ToArray();
+        RepositoryEntries = repositoryEntries;
+        UnsupportedEntries = unsupportedEntries;
+        HashBytesRead = hashBytesRead;
+        ExcludedDirectories = excludedDirectories;
+        DepthLimitedDirectories = depthLimitedDirectories;
+        ReparsePointsSkipped = reparsePointsSkipped;
     }
 
     public IReadOnlyList<CodeIndexPlanItem> Items { get; }
+    public int RepositoryEntries { get; }
+    public int UnsupportedEntries { get; }
+    public long HashBytesRead { get; }
+    public int ExcludedDirectories { get; }
+    public int DepthLimitedDirectories { get; }
+    public int ReparsePointsSkipped { get; }
 }
 
 /// <summary>Controls bounded discovery and explicit plugin selection.</summary>
@@ -56,16 +83,26 @@ public sealed record CodeIndexPlanningOptions
 {
     public CodeIndexPlanningOptions(
         CodeRepositoryEnumerationOptions? enumeration = null,
-        IReadOnlyCollection<CodePluginId>? pluginIds = null)
+        IReadOnlyCollection<CodePluginId>? pluginIds = null,
+        long maxHashSourceBytes = 16 * 1024 * 1024,
+        long maxHashTotalBytes = 512 * 1024 * 1024)
     {
+        if (maxHashSourceBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxHashSourceBytes));
+        if (maxHashTotalBytes < maxHashSourceBytes)
+            throw new ArgumentOutOfRangeException(nameof(maxHashTotalBytes));
         Enumeration = enumeration ?? new CodeRepositoryEnumerationOptions();
         PluginIds = pluginIds?.Distinct().OrderBy(id => id.Value, StringComparer.Ordinal).ToArray() ?? [];
         if (PluginIds.Any(id => id is null))
             throw new ArgumentException("Plugin selections cannot contain null identities.", nameof(pluginIds));
+        MaxHashSourceBytes = maxHashSourceBytes;
+        MaxHashTotalBytes = maxHashTotalBytes;
     }
 
     public CodeRepositoryEnumerationOptions Enumeration { get; }
     public IReadOnlyCollection<CodePluginId> PluginIds { get; }
+    public long MaxHashSourceBytes { get; }
+    public long MaxHashTotalBytes { get; }
 }
 
 /// <summary>Builds deterministic, content-addressed incremental indexing plans.</summary>
@@ -96,16 +133,63 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
             .ToDictionary(ManifestKey, StringComparer.Ordinal);
         var currentKeys = new HashSet<string>(StringComparer.Ordinal);
         var items = new List<CodeIndexPlanItem>();
+        var repositoryEntries = 0;
+        var unsupportedEntries = 0;
+        long hashBytesRead = 0;
+        var excludedDirectories = 0;
+        var depthLimitedDirectories = 0;
+        var reparsePointsSkipped = 0;
+        var enumeration = new CodeRepositoryEnumerationOptions(
+            options.Enumeration.ExcludedDirectoryNames,
+            options.Enumeration.MaxDepth,
+            options.Enumeration.MaxEntries,
+            kind =>
+            {
+                switch (kind)
+                {
+                    case CodeRepositoryDiscoveryEventKind.DirectoryExcluded:
+                        excludedDirectories++;
+                        break;
+                    case CodeRepositoryDiscoveryEventKind.DepthLimitReached:
+                        depthLimitedDirectories++;
+                        break;
+                    case CodeRepositoryDiscoveryEventKind.ReparsePointSkipped:
+                        reparsePointsSkipped++;
+                        break;
+                }
+                options.Enumeration.Report(kind);
+            });
 
-        await foreach (var entry in repository.EnumerateAsync(options.Enumeration, cancellationToken))
+        await foreach (var entry in repository.EnumerateAsync(enumeration, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            repositoryEntries++;
             var plugin = _plugins.Resolve(entry.Path);
-            if (plugin is null || (selectedIds.Count > 0 && !selectedIds.Contains(plugin.Id)))
+            if (plugin is null)
+            {
+                unsupportedEntries++;
+                continue;
+            }
+            if (selectedIds.Count > 0 && !selectedIds.Contains(plugin.Id))
                 continue;
 
-            var hash = entry.ContentHash ??
-                await ComputeHashAsync(repository, entry, cancellationToken).ConfigureAwait(false);
+            string hash;
+            if (entry.ContentHash is not null)
+            {
+                hash = entry.ContentHash;
+            }
+            else
+            {
+                var computed = await ComputeHashAsync(
+                    repository,
+                    entry,
+                    options.MaxHashSourceBytes,
+                    options.MaxHashTotalBytes,
+                    hashBytesRead,
+                    cancellationToken).ConfigureAwait(false);
+                hash = computed.Hash;
+                hashBytesRead += computed.BytesRead;
+            }
             var manifest = new CodeSourceManifest(
                 plugin.Id,
                 plugin.Version,
@@ -134,21 +218,48 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
             }
         }
 
-        return new CodeIndexPlan(items
-            .OrderBy(item => item.Manifest.PluginId.Value, StringComparer.Ordinal)
-            .ThenBy(item => item.Manifest.SourcePath, StringComparer.Ordinal)
-            .ToArray());
+        return new CodeIndexPlan(
+            items
+                .OrderBy(item => item.Manifest.PluginId.Value, StringComparer.Ordinal)
+                .ThenBy(item => item.Manifest.SourcePath, StringComparer.Ordinal)
+                .ToArray(),
+            repositoryEntries,
+            unsupportedEntries,
+            hashBytesRead,
+            excludedDirectories,
+            depthLimitedDirectories,
+            reparsePointsSkipped);
     }
 
-    private static async ValueTask<string> ComputeHashAsync(
+    private static async ValueTask<(string Hash, long BytesRead)> ComputeHashAsync(
         ICodeRepositorySource repository,
         CodeRepositoryEntry entry,
+        long maxSourceBytes,
+        long maxTotalBytes,
+        long priorBytesRead,
         CancellationToken cancellationToken)
     {
+        if (entry.Length > maxSourceBytes)
+            throw new CodeSourceSizeLimitException(entry.Path, maxSourceBytes, false);
         await using var stream = await repository.OpenReadAsync(entry, cancellationToken)
             .ConfigureAwait(false);
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-        return $"sha256:{Convert.ToHexStringLower(hash)}";
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        long bytesRead = 0;
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            bytesRead += read;
+            if (bytesRead > maxSourceBytes)
+                throw new CodeSourceSizeLimitException(entry.Path, maxSourceBytes, false);
+            if (priorBytesRead + bytesRead > maxTotalBytes)
+                throw new CodeSourceSizeLimitException(entry.Path, maxTotalBytes, true);
+            hasher.AppendData(buffer, 0, read);
+        }
+
+        return ($"sha256:{Convert.ToHexStringLower(hasher.GetHashAndReset())}", bytesRead);
     }
 
     private static string ManifestKey(CodeSourceManifest manifest) =>

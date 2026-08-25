@@ -230,6 +230,24 @@ Completed lifecycle-execution foundation:
 - end-to-end tests for successful indexing, deleted-source cleanup, failed-run
   state retention, diagnostics isolation, and incomplete-unit rejection.
 
+Completed pre-Roslyn lifecycle hardening:
+
+- lifecycle-scoped sinks reject batches whose repository, run, plugin, or
+  plugin version differs from the executing plugin, while stores independently
+  require replacement plugins to belong to the active run;
+- fully unchanged plugins skip extraction and source materialization while
+  retaining their prior graph and successful source state;
+- sources used by plugins are bounded, repeatable in-memory snapshots rather
+  than a second unverified view of a live filesystem;
+- SHA-256 sources are checked between planning and materialization, and a
+  boundary change fails explicitly instead of indexing bytes under a stale hash;
+- configurable per-source and total byte limits apply during both hashing and
+  materialization;
+- diagnostics distinguish unsupported files, excluded directories,
+  depth-limited directories, skipped reparse points, and bytes read;
+- regression tests cover ownership violations, unchanged-plugin skipping,
+  source races, per-source and total byte limits, and bounded parallel plugins.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;

@@ -317,6 +317,14 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                 "replacement.run.not-running",
                 "The replacement index run is not registered and running.");
         }
+
+        if (!run.Plugins.Contains(origin.PluginId))
+        {
+            throw Rejected(
+                CodeGraphValidationErrorKind.OwnershipMismatch,
+                "replacement.plugin.not-in-run",
+                "The replacement plugin is not registered for the index run.");
+        }
     }
 
     private static bool RunsEquivalent(

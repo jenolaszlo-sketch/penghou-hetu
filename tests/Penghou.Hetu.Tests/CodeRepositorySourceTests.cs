@@ -24,16 +24,20 @@ public sealed class CodeRepositorySourceTests
                 "class Generated {}");
             var provider = new FileSystemCodeRepositoryProvider();
             await using var source = await provider.OpenAsync(Descriptor(root));
+            var discoveryEvents = new List<CodeRepositoryDiscoveryEventKind>();
 
             var entries = await EnumerateAsync(
                 source,
-                new CodeRepositoryEnumerationOptions());
+                new CodeRepositoryEnumerationOptions(observer: discoveryEvents.Add));
 
             Assert.Equal(
                 ["README.md", "src/Example.cs"],
                 entries.Select(entry => entry.Path));
             Assert.False(source.IsConsistentSnapshot);
             Assert.Null(source.SnapshotIdentity);
+            Assert.Contains(
+                CodeRepositoryDiscoveryEventKind.DirectoryExcluded,
+                discoveryEvents);
         }
         finally
         {

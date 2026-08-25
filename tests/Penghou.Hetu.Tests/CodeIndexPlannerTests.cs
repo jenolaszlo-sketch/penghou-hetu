@@ -35,6 +35,9 @@ public sealed class CodeIndexPlannerTests
             ],
             plan.Items.Select(item => (item.Manifest.SourcePath, item.Status)));
         Assert.Null(plan.Items.Single(item => item.Status == CodeIndexPlanStatus.Deleted).Source);
+        Assert.Equal(4, plan.RepositoryEntries);
+        Assert.Equal(1, plan.UnsupportedEntries);
+        Assert.True(plan.HashBytesRead > 0);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace Penghou.Hetu;
 
@@ -9,18 +10,28 @@ public sealed record CodeIndexingOptions
     public CodeIndexingOptions(
         CodeIndexPlanningOptions? planning = null,
         CodeGraphBatchLimits? batchLimits = null,
-        int maxConcurrentPlugins = 1)
+        int maxConcurrentPlugins = 1,
+        long maxSourceBytes = 16 * 1024 * 1024,
+        long maxTotalSourceBytes = 512 * 1024 * 1024)
     {
         if (maxConcurrentPlugins < 1)
             throw new ArgumentOutOfRangeException(nameof(maxConcurrentPlugins));
+        if (maxSourceBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxSourceBytes));
+        if (maxTotalSourceBytes < maxSourceBytes)
+            throw new ArgumentOutOfRangeException(nameof(maxTotalSourceBytes));
         Planning = planning ?? new CodeIndexPlanningOptions();
         BatchLimits = batchLimits ?? new CodeGraphBatchLimits();
         MaxConcurrentPlugins = maxConcurrentPlugins;
+        MaxSourceBytes = maxSourceBytes;
+        MaxTotalSourceBytes = maxTotalSourceBytes;
     }
 
     public CodeIndexPlanningOptions Planning { get; }
     public CodeGraphBatchLimits BatchLimits { get; }
     public int MaxConcurrentPlugins { get; }
+    public long MaxSourceBytes { get; }
+    public long MaxTotalSourceBytes { get; }
 }
 
 /// <summary>Privacy-safe measurements for one indexing attempt.</summary>
@@ -33,6 +44,11 @@ public sealed record CodeIndexingDiagnostics(
     int FilesChanged,
     int FilesUnchanged,
     int FilesDeleted,
+    int FilesUnsupported,
+    int DirectoriesExcluded,
+    int DirectoriesDepthLimited,
+    int ReparsePointsSkipped,
+    long SourceBytesRead,
     int PluginsExecuted,
     int IndexUnitsCompleted,
     int IndexUnitsDeleted,
@@ -85,6 +101,7 @@ public sealed class CodeIndexingService
         var persistenceDuration = TimeSpan.Zero;
         var pluginsExecuted = 0;
         var unitsDeleted = 0;
+        long sourceBytesRead = 0;
 
         await using var repository = await _repositories.OpenAsync(descriptor, cancellationToken)
             .ConfigureAwait(false);
@@ -102,38 +119,60 @@ public sealed class CodeIndexingService
             .ConfigureAwait(false);
         var planner = new CodeIndexPlanner(_plugins);
         var planningStarted = Stopwatch.GetTimestamp();
+        var planningOptions = new CodeIndexPlanningOptions(
+            options.Planning.Enumeration,
+            options.Planning.PluginIds,
+            options.MaxSourceBytes,
+            options.MaxTotalSourceBytes);
         plan = await planner.CreatePlanAsync(
             repository,
             previousState?.Sources,
-            options.Planning,
+            planningOptions,
             cancellationToken).ConfigureAwait(false);
         var planningDuration = Stopwatch.GetElapsedTime(planningStarted);
         var selectedPlugins = SelectPlugins(plan, options.Planning);
+        var executingPlugins = selectedPlugins
+            .Where(plugin => plan.Items.Any(item =>
+                item.Manifest.PluginId == plugin.Id &&
+                item.Status != CodeIndexPlanStatus.Unchanged))
+            .ToArray();
         var running = new CodeIndexRunManifest(
             descriptor.Id,
             runId,
             startedAt,
-            plugins: selectedPlugins.Select(plugin => plugin.Id).ToArray());
+            plugins: executingPlugins.Select(plugin => plugin.Id).ToArray());
         await _store.StoreIndexRunAsync(running, cancellationToken).ConfigureAwait(false);
 
         try
         {
             var extractionStarted = Stopwatch.GetTimestamp();
+            var materialized = await MaterializeSourcesAsync(
+                repository,
+                plan,
+                executingPlugins,
+                options,
+                cancellationToken).ConfigureAwait(false);
+            sourceBytesRead = plan.HashBytesRead +
+                materialized.Values.Sum(source => (long)source.Content.Length);
             await using var sink = new CodeGraphIngestionSink(
                 _store,
                 options.BatchLimits,
                 onCompleted: ingestion.Add);
             using var concurrency = new SemaphoreSlim(options.MaxConcurrentPlugins);
             var results = new ConcurrentBag<(ICodeGraphPlugin Plugin, CodeGraphExtractionResult Result)>();
-            var tasks = selectedPlugins.Select(async plugin =>
+            var tasks = executingPlugins.Select(async plugin =>
             {
                 await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    var context = CreateContext(descriptor, runId, plugin, plan, repository, previousState);
+                    var context = CreateContext(
+                        descriptor, runId, plugin, plan, materialized, previousState);
                     await using var session = await plugin.CreateSessionAsync(context, cancellationToken)
                         .ConfigureAwait(false);
-                    var result = await session.ExtractAsync(sink, cancellationToken).ConfigureAwait(false);
+                    var scopedSink = new PluginScopedSink(
+                        sink, descriptor.Id, runId, plugin.Id, plugin.Version);
+                    var result = await session.ExtractAsync(scopedSink, cancellationToken)
+                        .ConfigureAwait(false);
                     results.Add((plugin, result ?? throw new InvalidOperationException(
                         $"Plugin '{plugin.Id}' returned a null extraction result.")));
                     Interlocked.Increment(ref pluginsExecuted);
@@ -168,13 +207,14 @@ public sealed class CodeIndexingService
                 startedAt,
                 CodeIndexRunStatus.Completed,
                 completedAt,
-                selectedPlugins.Select(plugin => plugin.Id).ToArray());
+                executingPlugins.Select(plugin => plugin.Id).ToArray());
             var state = CreateState(descriptor.Id, runId, repository, previousState, plan, selectedPlugins);
             await _store.CompleteIndexRunAsync(completed, state, cancellationToken).ConfigureAwait(false);
             persistenceDuration = Stopwatch.GetElapsedTime(persistenceStarted);
             var final = CreateDiagnostics(
                 descriptor.Id, runId, CodeIndexRunStatus.Completed, plan, ingestion,
-                pluginsExecuted, unitsDeleted, planningDuration, extractionDuration, persistenceDuration);
+                pluginsExecuted, unitsDeleted, sourceBytesRead,
+                planningDuration, extractionDuration, persistenceDuration);
             Report(diagnostics, final);
             return new(plan, final);
         }
@@ -186,7 +226,8 @@ public sealed class CodeIndexingService
             await TryFinishFailedRunAsync(running, status).ConfigureAwait(false);
             var final = CreateDiagnostics(
                 descriptor.Id, runId, status, plan, ingestion,
-                pluginsExecuted, unitsDeleted, planningDuration, extractionDuration, persistenceDuration);
+                pluginsExecuted, unitsDeleted, sourceBytesRead,
+                planningDuration, extractionDuration, persistenceDuration);
             Report(diagnostics, final);
             throw;
         }
@@ -207,7 +248,7 @@ public sealed class CodeIndexingService
         CodeIndexRunId runId,
         ICodeGraphPlugin plugin,
         CodeIndexPlan plan,
-        ICodeRepositorySource repository,
+        IReadOnlyDictionary<string, MaterializedSource> materialized,
         CodeRepositoryIndexState? previousState)
     {
         var previous = previousState?.Sources
@@ -218,11 +259,16 @@ public sealed class CodeIndexingService
             .Where(item => item.Source is not null)
             .Select(item =>
             {
-                var entry = item.Source!;
+                var source = materialized[$"{plugin.Id.Value}\n{item.Manifest.SourcePath}"];
                 return new CodeGraphSource(
-                    entry.Path,
+                    item.Manifest.SourcePath,
                     item.Manifest.SourceHash,
-                    cancellationToken => repository.OpenReadAsync(entry, cancellationToken));
+                    cancellationToken =>
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        Stream stream = new MemoryStream(source.Content, writable: false);
+                        return new ValueTask<Stream>(stream);
+                    });
             })
             .ToArray();
         var changes = items.Select(item => new CodeGraphSourceChange(
@@ -284,6 +330,7 @@ public sealed class CodeIndexingService
         IEnumerable<CodeGraphIngestionDiagnostics> ingestion,
         int pluginsExecuted,
         int unitsDeleted,
+        long sourceBytesRead,
         TimeSpan planningDuration,
         TimeSpan extractionDuration,
         TimeSpan persistenceDuration)
@@ -293,11 +340,16 @@ public sealed class CodeIndexingService
             repositoryId,
             runId,
             status,
-            plan.Items.Count(item => item.Status != CodeIndexPlanStatus.Deleted),
+            plan.RepositoryEntries,
             plan.Items.Count(item => item.Status == CodeIndexPlanStatus.New),
             plan.Items.Count(item => item.Status == CodeIndexPlanStatus.Changed),
             plan.Items.Count(item => item.Status == CodeIndexPlanStatus.Unchanged),
             plan.Items.Count(item => item.Status == CodeIndexPlanStatus.Deleted),
+            plan.UnsupportedEntries,
+            plan.ExcludedDirectories,
+            plan.DepthLimitedDirectories,
+            plan.ReparsePointsSkipped,
+            sourceBytesRead,
             pluginsExecuted,
             units.Length,
             unitsDeleted,
@@ -309,6 +361,55 @@ public sealed class CodeIndexingService
             extractionDuration,
             persistenceDuration,
             units.SelectMany(unit => unit.WarningCodes).Distinct().Order(StringComparer.Ordinal).ToArray());
+    }
+
+    private static async ValueTask<IReadOnlyDictionary<string, MaterializedSource>> MaterializeSourcesAsync(
+        ICodeRepositorySource repository,
+        CodeIndexPlan plan,
+        IReadOnlyList<ICodeGraphPlugin> plugins,
+        CodeIndexingOptions options,
+        CancellationToken cancellationToken)
+    {
+        var pluginIds = plugins.Select(plugin => plugin.Id).ToHashSet();
+        var result = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
+        var totalBytes = plan.HashBytesRead;
+        foreach (var item in plan.Items.Where(item =>
+                     item.Source is not null && pluginIds.Contains(item.Manifest.PluginId)))
+        {
+            var entry = item.Source!;
+            if (entry.Length > options.MaxSourceBytes)
+                throw new CodeSourceSizeLimitException(entry.Path, options.MaxSourceBytes, false);
+            await using var input = await repository.OpenReadAsync(entry, cancellationToken)
+                .ConfigureAwait(false);
+            await using var output = new MemoryStream();
+            var buffer = new byte[81920];
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                    break;
+                totalBytes += read;
+                if (output.Length + read > options.MaxSourceBytes)
+                    throw new CodeSourceSizeLimitException(entry.Path, options.MaxSourceBytes, false);
+                if (totalBytes > options.MaxTotalSourceBytes)
+                    throw new CodeSourceSizeLimitException(entry.Path, options.MaxTotalSourceBytes, true);
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            }
+
+            var content = output.ToArray();
+            if (item.Manifest.SourceHash.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+            {
+                var actual = $"sha256:{Convert.ToHexStringLower(SHA256.HashData(content))}";
+                if (!string.Equals(actual, item.Manifest.SourceHash, StringComparison.OrdinalIgnoreCase))
+                    throw new CodeSourceChangedDuringIndexingException(entry.Path);
+            }
+
+            result.Add(
+                $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                new MaterializedSource(content));
+        }
+
+        return result;
     }
 
     private static void Report(
@@ -324,4 +425,57 @@ public sealed class CodeIndexingService
             // Diagnostics must never change indexing success or failure.
         }
     }
+
+    private sealed record MaterializedSource(byte[] Content);
+
+    private sealed class PluginScopedSink(
+        ICodeGraphSink inner,
+        CodeRepositoryId repositoryId,
+        CodeIndexRunId runId,
+        CodePluginId pluginId,
+        string pluginVersion) : ICodeGraphSink
+    {
+        public CodeGraphBatchLimits Limits => inner.Limits;
+
+        public ValueTask WriteBatchAsync(
+            CodeGraphBatch batch,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(batch);
+            if (batch.Origin.RepositoryId != repositoryId ||
+                batch.Origin.IndexRunId != runId ||
+                batch.Origin.PluginId != pluginId ||
+                !string.Equals(batch.Origin.PluginVersion, pluginVersion, StringComparison.Ordinal))
+            {
+                throw new CodeGraphBatchRejectedException(
+                    "A plugin emitted a batch outside its assigned lifecycle scope.",
+                    [
+                        new CodeGraphValidationError(
+                            CodeGraphValidationErrorKind.OwnershipMismatch,
+                            "lifecycle.batch.ownership-mismatch",
+                            "Batch repository, run, plugin, and version must match the executing plugin.")
+                    ]);
+            }
+
+            return inner.WriteBatchAsync(batch, cancellationToken);
+        }
+    }
+}
+
+public sealed class CodeSourceChangedDuringIndexingException(string path)
+    : Exception($"Repository source '{path}' changed between planning and extraction.")
+{
+    public string Path { get; } = path;
+}
+
+public sealed class CodeSourceSizeLimitException(
+    string path,
+    long maximumBytes,
+    bool totalLimit) : Exception(totalLimit
+        ? $"Repository source materialization exceeded the total limit of {maximumBytes} bytes."
+        : $"Repository source '{path}' exceeded the limit of {maximumBytes} bytes.")
+{
+    public string Path { get; } = path;
+    public long MaximumBytes { get; } = maximumBytes;
+    public bool IsTotalLimit { get; } = totalLimit;
 }

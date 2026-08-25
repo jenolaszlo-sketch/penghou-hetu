@@ -145,6 +145,19 @@ remain responsible for choosing atomic index units and report obsolete unit IDs
 after extraction. Hetu refuses to complete a run if any streamed unit remains
 buffered or rejected.
 
+Lifecycle execution is defensive at repository boundaries. Each executing
+plugin receives a scoped sink, so it cannot accidentally emit facts under a
+different repository, run, plugin identity, or plugin version. Plugins whose
+inputs are entirely unchanged are not invoked.
+
+For providers without an immutable snapshot, Hetu hashes sources during
+planning and materializes bounded, repeatable content before extraction. A
+SHA-256 mismatch means the live source changed during the boundary and the run
+fails explicitly. `CodeIndexingOptions` limits both individual source size and
+total bytes read; defaults are 16 MiB per source and 512 MiB per run. Discovery
+diagnostics report unsupported files, excluded and depth-limited directories,
+skipped reparse points, and source bytes without recording paths or content.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

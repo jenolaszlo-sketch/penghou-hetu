@@ -41,6 +41,17 @@ public static class CodeGraphStoreConformanceSuite
             .ConfigureAwait(false);
         checks.Add("index-run-idempotent-start");
 
+        await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>
+            await store.ReplaceIndexUnitAsync(
+                Replacement(
+                    repositoryId,
+                    runId,
+                    new CodePluginId("plugin:not-in-run"),
+                    "unit:foreign",
+                    [Node("foreign", "Example.Foreign")]),
+                cancellationToken).ConfigureAwait(false));
+        checks.Add("replacement-plugin-must-belong-to-run");
+
         var shared = Node("shared", "Example.Shared");
         var firstOnly = Node("first", "Example.First");
         var secondOnly = Node("second", "Example.Second");
