@@ -56,9 +56,31 @@ public sealed record CodeIndexingDiagnostics(
     int DeclarationsProduced,
     int EdgesProduced,
     int RejectedFacts,
+    int UnresolvedRelationships,
     TimeSpan PlanningDuration,
     TimeSpan ExtractionDuration,
     TimeSpan PersistenceDuration,
+    IReadOnlyList<CodePluginIndexingDiagnostics> Plugins,
+    IReadOnlyList<string> WarningCodes);
+
+public enum CodePluginIndexingStatus
+{
+    Completed = 0,
+    Failed = 1,
+    Cancelled = 2
+}
+
+/// <summary>Privacy-safe measurements for one plugin execution.</summary>
+public sealed record CodePluginIndexingDiagnostics(
+    CodePluginId PluginId,
+    string PluginVersion,
+    CodePluginIndexingStatus Status,
+    TimeSpan Duration,
+    int SourcesSupplied,
+    int SourcesExamined,
+    int SourcesContributingFacts,
+    int UnresolvedRelationships,
+    int ObsoleteIndexUnits,
     IReadOnlyList<string> WarningCodes);
 
 /// <summary>Result of one completed repository indexing lifecycle.</summary>
@@ -97,6 +119,7 @@ public sealed class CodeIndexingService
         var startedAt = _timeProvider.GetUtcNow();
         CodeIndexPlan plan;
         var ingestion = new ConcurrentBag<CodeGraphIngestionDiagnostics>();
+        var pluginDiagnostics = new ConcurrentBag<CodePluginIndexingDiagnostics>();
         var extractionDuration = TimeSpan.Zero;
         var persistenceDuration = TimeSpan.Zero;
         var pluginsExecuted = 0;
@@ -163,9 +186,11 @@ public sealed class CodeIndexingService
             var tasks = executingPlugins.Select(async plugin =>
             {
                 await concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var pluginStarted = Stopwatch.GetTimestamp();
+                CodeGraphPluginContext? context = null;
                 try
                 {
-                    var context = CreateContext(
+                    context = CreateContext(
                         descriptor, runId, plugin, plan, materialized, previousState);
                     await using var session = await plugin.CreateSessionAsync(context, cancellationToken)
                         .ConfigureAwait(false);
@@ -175,7 +200,31 @@ public sealed class CodeIndexingService
                         .ConfigureAwait(false);
                     results.Add((plugin, result ?? throw new InvalidOperationException(
                         $"Plugin '{plugin.Id}' returned a null extraction result.")));
+                    pluginDiagnostics.Add(CreatePluginDiagnostics(
+                        plugin,
+                        CodePluginIndexingStatus.Completed,
+                        Stopwatch.GetElapsedTime(pluginStarted),
+                        context.Sources.Count,
+                        result));
                     Interlocked.Increment(ref pluginsExecuted);
+                }
+                catch (Exception exception)
+                {
+                    var status = exception is OperationCanceledException
+                        ? CodePluginIndexingStatus.Cancelled
+                        : CodePluginIndexingStatus.Failed;
+                    pluginDiagnostics.Add(new(
+                        plugin.Id,
+                        plugin.Version,
+                        status,
+                        Stopwatch.GetElapsedTime(pluginStarted),
+                        context?.Sources.Count ?? 0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        [status == CodePluginIndexingStatus.Cancelled ? "plugin.cancelled" : "plugin.failed"]));
+                    throw;
                 }
                 finally
                 {
@@ -214,7 +263,8 @@ public sealed class CodeIndexingService
             var final = CreateDiagnostics(
                 descriptor.Id, runId, CodeIndexRunStatus.Completed, plan, ingestion,
                 pluginsExecuted, unitsDeleted, sourceBytesRead,
-                planningDuration, extractionDuration, persistenceDuration);
+                planningDuration, extractionDuration, persistenceDuration,
+                pluginDiagnostics);
             Report(diagnostics, final);
             return new(plan, final);
         }
@@ -227,7 +277,8 @@ public sealed class CodeIndexingService
             var final = CreateDiagnostics(
                 descriptor.Id, runId, status, plan, ingestion,
                 pluginsExecuted, unitsDeleted, sourceBytesRead,
-                planningDuration, extractionDuration, persistenceDuration);
+                planningDuration, extractionDuration, persistenceDuration,
+                pluginDiagnostics);
             Report(diagnostics, final);
             throw;
         }
@@ -333,9 +384,13 @@ public sealed class CodeIndexingService
         long sourceBytesRead,
         TimeSpan planningDuration,
         TimeSpan extractionDuration,
-        TimeSpan persistenceDuration)
+        TimeSpan persistenceDuration,
+        IEnumerable<CodePluginIndexingDiagnostics> pluginDiagnostics)
     {
         var units = ingestion.ToArray();
+        var plugins = pluginDiagnostics
+            .OrderBy(plugin => plugin.PluginId.Value, StringComparer.Ordinal)
+            .ToArray();
         return new(
             repositoryId,
             runId,
@@ -357,11 +412,36 @@ public sealed class CodeIndexingService
             units.Sum(unit => unit.DeclarationsReceived),
             units.Sum(unit => unit.EdgesReceived),
             units.Sum(unit => unit.RejectedFacts),
+            plugins.Sum(plugin => plugin.UnresolvedRelationships),
             planningDuration,
             extractionDuration,
             persistenceDuration,
-            units.SelectMany(unit => unit.WarningCodes).Distinct().Order(StringComparer.Ordinal).ToArray());
+            plugins,
+            units.SelectMany(unit => unit.WarningCodes)
+                .Concat(plugins.SelectMany(plugin => plugin.WarningCodes))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .Take(100)
+                .ToArray());
     }
+
+    private static CodePluginIndexingDiagnostics CreatePluginDiagnostics(
+        ICodeGraphPlugin plugin,
+        CodePluginIndexingStatus status,
+        TimeSpan duration,
+        int sourcesSupplied,
+        CodeGraphExtractionResult result) =>
+        new(
+            plugin.Id,
+            plugin.Version,
+            status,
+            duration,
+            sourcesSupplied,
+            result.SourcesExamined,
+            result.SourcesContributingFacts,
+            result.UnresolvedRelationships,
+            result.ObsoleteIndexUnits.Count,
+            result.WarningCodes.ToArray());
 
     private static async ValueTask<IReadOnlyDictionary<string, MaterializedSource>> MaterializeSourcesAsync(
         ICodeRepositorySource repository,

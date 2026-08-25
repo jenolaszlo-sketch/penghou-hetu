@@ -31,6 +31,8 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeIndexingOptions",
             "Penghou.Hetu.CodeIndexingResult",
             "Penghou.Hetu.CodeIndexingService",
+            "Penghou.Hetu.CodePluginIndexingDiagnostics",
+            "Penghou.Hetu.CodePluginIndexingStatus",
             "Penghou.Hetu.CodeIndexUnitReplacement",
             "Penghou.Hetu.CodeRepositoryManifest",
             "Penghou.Hetu.CodeRepositoryDescriptor",

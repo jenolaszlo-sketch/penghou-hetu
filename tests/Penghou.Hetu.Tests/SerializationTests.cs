@@ -113,4 +113,25 @@ public sealed class SerializationTests
         Assert.True(restored.IsConsistentSnapshot);
         Assert.Equal(state.Sources.Single(), restored.Sources.Single());
     }
+
+    [Fact]
+    public void ExtractionResult_RoundTripsDiagnosticsAndObsoleteUnits()
+    {
+        var result = new CodeGraphExtractionResult(
+            [new CodeIndexUnitId("unit:obsolete")],
+            sourcesExamined: 4,
+            sourcesContributingFacts: 3,
+            unresolvedRelationships: 2,
+            warningCodes: ["csharp.unresolved", "csharp.project-warning"]);
+
+        var json = JsonSerializer.Serialize(result);
+        var restored = JsonSerializer.Deserialize<CodeGraphExtractionResult>(json);
+
+        Assert.NotNull(restored);
+        Assert.Equal(result.ObsoleteIndexUnits.Single(), restored.ObsoleteIndexUnits.Single());
+        Assert.Equal(4, restored.SourcesExamined);
+        Assert.Equal(3, restored.SourcesContributingFacts);
+        Assert.Equal(2, restored.UnresolvedRelationships);
+        Assert.Equal(result.WarningCodes, restored.WarningCodes);
+    }
 }

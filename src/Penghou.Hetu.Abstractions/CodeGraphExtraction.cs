@@ -117,20 +117,52 @@ public sealed record CodeGraphSourceChange
     public string? CurrentHash { get; }
 }
 
-/// <summary>Reports plugin-owned index units that are no longer part of its output.</summary>
+/// <summary>Reports cleanup work and bounded privacy-safe extraction diagnostics.</summary>
 public sealed record CodeGraphExtractionResult
 {
-    public CodeGraphExtractionResult(IReadOnlyCollection<CodeIndexUnitId>? obsoleteIndexUnits = null)
+    public CodeGraphExtractionResult(
+        IReadOnlyCollection<CodeIndexUnitId>? obsoleteIndexUnits = null,
+        int sourcesExamined = 0,
+        int sourcesContributingFacts = 0,
+        int unresolvedRelationships = 0,
+        IReadOnlyCollection<string>? warningCodes = null)
     {
+        if (obsoleteIndexUnits?.Any(id => id is null) == true)
+            throw new ArgumentException("Obsolete units cannot contain null identities.", nameof(obsoleteIndexUnits));
         ObsoleteIndexUnits = obsoleteIndexUnits?
             .Distinct()
             .OrderBy(id => id.Value, StringComparer.Ordinal)
             .ToArray() ?? [];
-        if (ObsoleteIndexUnits.Any(id => id is null))
-            throw new ArgumentException("Obsolete units cannot contain null identities.", nameof(obsoleteIndexUnits));
+        if (ObsoleteIndexUnits.Count > 100_000)
+            throw new ArgumentException("Extraction results cannot report more than 100,000 obsolete units.", nameof(obsoleteIndexUnits));
+        if (sourcesExamined < 0)
+            throw new ArgumentOutOfRangeException(nameof(sourcesExamined));
+        if (sourcesContributingFacts < 0 || sourcesContributingFacts > sourcesExamined)
+            throw new ArgumentOutOfRangeException(nameof(sourcesContributingFacts));
+        if (unresolvedRelationships < 0)
+            throw new ArgumentOutOfRangeException(nameof(unresolvedRelationships));
+
+        var warnings = warningCodes?.Select(code =>
+        {
+            var validated = ContractValue.Identifier(code, nameof(warningCodes));
+            if (validated.Length > 128)
+                throw new ArgumentException("Warning codes cannot exceed 128 characters.", nameof(warningCodes));
+            return validated;
+        }).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray() ?? [];
+        if (warnings.Length > 100)
+            throw new ArgumentException("Extraction results cannot report more than 100 warning codes.", nameof(warningCodes));
+
+        SourcesExamined = sourcesExamined;
+        SourcesContributingFacts = sourcesContributingFacts;
+        UnresolvedRelationships = unresolvedRelationships;
+        WarningCodes = warnings;
     }
 
     public IReadOnlyCollection<CodeIndexUnitId> ObsoleteIndexUnits { get; }
+    public int SourcesExamined { get; }
+    public int SourcesContributingFacts { get; }
+    public int UnresolvedRelationships { get; }
+    public IReadOnlyCollection<string> WarningCodes { get; }
 }
 
 /// <summary>Discovers normalized graph facts for one language.</summary>

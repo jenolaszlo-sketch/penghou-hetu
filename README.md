@@ -158,6 +158,14 @@ total bytes read; defaults are 16 MiB per source and 512 MiB per run. Discovery
 diagnostics report unsupported files, excluded and depth-limited directories,
 skipped reparse points, and source bytes without recording paths or content.
 
+Language plugins return bounded, privacy-safe extraction diagnostics alongside
+obsolete unit IDs. They can report examined and contributing source counts,
+unresolved relationship counts, and stable warning codes. Lifecycle diagnostics
+add per-plugin status, version, duration, source counts, unresolved counts, and
+obsolete-unit counts, while aggregate diagnostics make repository-level health
+visible without logging source paths or content. Diagnostic callbacks remain
+failure-isolated from indexing behavior.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

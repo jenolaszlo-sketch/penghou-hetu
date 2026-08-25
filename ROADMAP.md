@@ -248,6 +248,21 @@ Completed pre-Roslyn lifecycle hardening:
 - regression tests cover ownership violations, unchanged-plugin skipping,
   source races, per-source and total byte limits, and bounded parallel plugins.
 
+Completed Milestone 4 preparation:
+
+- bounded extraction results report sources examined, sources contributing
+  facts, unresolved relationships, obsolete units, and privacy-safe warning
+  codes;
+- lifecycle diagnostics expose deterministically ordered per-plugin status,
+  version, duration, supplied/examined/contributing source counts, unresolved
+  relationships, obsolete-unit counts, and warning codes;
+- failed and cancelled plugin executions remain observable without replacing
+  the original exception or allowing telemetry observers to affect indexing;
+- aggregate unresolved counts and warning codes are available without logging
+  source paths or content;
+- validation, serialization, success, and failure regression tests lock down the
+  diagnostics contract before the Roslyn plugin depends on it.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;

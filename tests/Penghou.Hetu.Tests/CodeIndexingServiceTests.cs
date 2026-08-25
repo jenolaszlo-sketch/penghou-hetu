@@ -20,6 +20,14 @@ public sealed class CodeIndexingServiceTests
         Assert.Equal(CodeIndexRunStatus.Completed, first.Diagnostics.Status);
         Assert.Equal(1, first.Diagnostics.FilesNew);
         Assert.Equal(1, first.Diagnostics.IndexUnitsCompleted);
+        Assert.Equal(2, first.Diagnostics.UnresolvedRelationships);
+        var pluginDiagnostics = Assert.Single(first.Diagnostics.Plugins);
+        Assert.Equal(plugin.Id, pluginDiagnostics.PluginId);
+        Assert.Equal(1, pluginDiagnostics.SourcesExamined);
+        Assert.Equal(1, pluginDiagnostics.SourcesContributingFacts);
+        Assert.Equal(2, pluginDiagnostics.UnresolvedRelationships);
+        Assert.Contains("test.unresolved", pluginDiagnostics.WarningCodes);
+        Assert.True(pluginDiagnostics.Duration >= TimeSpan.Zero);
         Assert.NotNull(await store.GetNodeAsync(descriptor.Id, new("node:example")));
         Assert.Equal("run:first", (await store.GetLatestIndexStateAsync(descriptor.Id))!.IndexRunId.Value);
 
@@ -46,13 +54,20 @@ public sealed class CodeIndexingServiceTests
         var firstState = await store.GetLatestIndexStateAsync(descriptor.Id);
         files["src/Example.cs"] = "two";
         plugin.Fail = true;
+        CodeIndexingDiagnostics? diagnostics = null;
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await service.IndexAsync(descriptor, new("run:failed")));
+            await service.IndexAsync(
+                descriptor,
+                new("run:failed"),
+                diagnostics: value => diagnostics = value));
 
         var failed = await store.GetIndexRunAsync(descriptor.Id, new("run:failed"));
         Assert.Equal(CodeIndexRunStatus.Failed, failed!.Status);
         Assert.Equal(firstState!.IndexRunId, (await store.GetLatestIndexStateAsync(descriptor.Id))!.IndexRunId);
+        Assert.NotNull(diagnostics);
+        Assert.Equal(CodePluginIndexingStatus.Failed, Assert.Single(diagnostics.Plugins).Status);
+        Assert.Contains("plugin.failed", diagnostics.WarningCodes);
     }
 
     [Fact]
@@ -265,7 +280,11 @@ public sealed class CodeIndexingServiceTests
                         ],
                         completesIndexUnit: true),
                     cancellationToken);
-                return new();
+                return new(
+                    sourcesExamined: context.Sources.Count,
+                    sourcesContributingFacts: context.Sources.Count,
+                    unresolvedRelationships: 2,
+                    warningCodes: ["test.unresolved"]);
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;

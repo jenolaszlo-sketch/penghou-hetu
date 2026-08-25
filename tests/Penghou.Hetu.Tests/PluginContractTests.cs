@@ -6,6 +6,24 @@ namespace Penghou.Hetu.Tests;
 public sealed class PluginContractTests
 {
     [Fact]
+    public void ExtractionResult_RejectsInvalidOrUnboundedDiagnostics()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new CodeGraphExtractionResult(sourcesExamined: -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new CodeGraphExtractionResult(
+                sourcesExamined: 1,
+                sourcesContributingFacts: 2));
+        Assert.Throws<ArgumentException>(() =>
+            new CodeGraphExtractionResult(
+                warningCodes: Enumerable.Range(0, 101).Select(index => $"warning:{index}").ToArray()));
+        Assert.Throws<ArgumentException>(() =>
+            new CodeGraphExtractionResult(warningCodes: [new string('x', 129)]));
+        Assert.Throws<ArgumentException>(() =>
+            new CodeGraphExtractionResult(obsoleteIndexUnits: [null!]));
+    }
+
+    [Fact]
     public async Task SyntaxAndProjectAwarePlugins_UseTheSameSessionContract()
     {
         var context = CreateContext();
