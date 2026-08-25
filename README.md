@@ -166,6 +166,31 @@ obsolete-unit counts, while aggregate diagnostics make repository-level health
 visible without logging source paths or content. Diagnostic callbacks remain
 failure-isolated from indexing behavior.
 
+## C# structural extraction
+
+`Penghou.Hetu.CSharp` now provides the first useful Roslyn plugin. It consumes
+provider-neutral `.cs` source readers, creates one repository-wide compilation,
+and emits files, namespaces, types, interfaces, delegates, callables,
+properties, fields, parameters, physical declarations, and semantic containment:
+
+```csharp
+var plugin = new CSharpCodeGraphPlugin();
+var indexing = new CodeIndexingService(
+    repositoryProviders,
+    new CodeGraphPluginRegistry([plugin]),
+    store);
+
+await indexing.IndexAsync(
+    new CodeRepositoryDescriptor(repositoryId, repositoryLocation),
+    runId);
+```
+
+Partial declarations share one semantic symbol node while retaining separate
+source declarations. Callable identities distinguish overload signatures. The
+plugin reports stable Roslyn diagnostic codes rather than compiler messages or
+source content. This first slice intentionally does not evaluate MSBuild; project
+and solution modeling is the next C# milestone slice.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

@@ -301,6 +301,32 @@ Second semantic slice:
 Use canonical C# identities that account for containing symbols, metadata
 names, generic arity, overload signatures, parameter types, and member kind.
 
+Completed initial structural slice:
+
+- a public `CSharpCodeGraphPlugin` backed by Roslyn 5.9 without exposing Roslyn
+  types through Hetu contracts;
+- provider-neutral parsing of supplied repeatable `.cs` sources without a
+  filesystem or `MSBuildWorkspace` requirement;
+- repository-wide semantic compilation using stable documentation identities
+  and hashed Hetu node, symbol, declaration, and edge IDs;
+- file, namespace, class, struct, record, interface, enum, delegate, method,
+  constructor, property, indexer, field, and parameter extraction;
+- shared semantic nodes with separate physical declarations for partial types;
+- overload-safe callable identities and semantic `declares` and `contains`
+  relationships;
+- bounded batch emission under one repository-aware C# index unit;
+- privacy-safe Roslyn diagnostic codes and unresolved-error counts;
+- direct multi-file, partial-type, overload, determinism, public-boundary, and
+  full filesystem-to-store lifecycle tests.
+
+Next C# slice:
+
+- provider-neutral project and solution descriptors from supplied project
+  inputs;
+- explicit project nodes, source assignment, project references, compilation
+  options, and per-project atomic units;
+- inheritance and interface implementation using resolved Roslyn symbols.
+
 Exit criteria:
 
 - a multi-project fixture with partial types and overloads indexes correctly;
