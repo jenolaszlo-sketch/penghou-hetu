@@ -402,17 +402,17 @@ Completed durable-provider foundation:
 - official LadybugDB 0.19.1 managed integration with host-selected native
   runtime packages;
 - versioned schema creation and compatibility checks;
-- transactional persistence of validated store mutations and restart replay;
-- the complete `ICodeGraphStore` surface backed by the already-conformant
-  provider-neutral materialization semantics;
+- normalized repository, run, latest-state, owned-unit, node, declaration, and
+  edge tables with transactional replacement and deletion;
+- primary-keyed identities plus pushed-down exact lookup, declaration,
+  qualified-name, evidence-filter, and bounded traversal queries;
+- the complete `ICodeGraphStore` surface with deterministic provider-neutral
+  materialization semantics across process restart;
 - health reporting plus conformance and durable-reopen integration tests when
   the native engine is available.
 
 Before calling the optimized Ladybug milestone complete:
 
-- replace the initial durable command-state representation with normalized
-  Ladybug node, relationship, declaration, manifest, and ownership tables;
-- push bounded lookup and traversal into indexed Cypher queries;
 - run the provider conformance suite in CI with every supported native runtime;
 - benchmark ingestion, replacement, reopen, traversal, and deletion before
   selecting indexes or denormalized projections.
@@ -444,9 +444,10 @@ Covered so far:
   limits, dense cyclic traversal, deterministic ordering, and bounded work;
 - failed and cancelled runs retaining the latest successful incremental state.
 
-Remaining resilience work follows the optimized Ladybug schema: incompatible
-and corrupted durable metadata fixtures, interrupted native transactions, and
-large-store replacement/traversal benchmarks.
+The normalized Ladybug schema additionally covers incompatible schema versions,
+corrupted durable payloads, full graph/run/state restart, and injected native
+transaction interruption with rollback. Large-store replacement and traversal
+benchmarks remain as the final resilience gate.
 
 ## Milestone 8 — dogfood with Solo
 

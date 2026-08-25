@@ -225,7 +225,9 @@ mutations transactionally, restores state after process restart, and exposes a
 lightweight health result. Hosts must reference one matching native LadybugDB
 runtime package, such as `LadybugDB.Native.win-x64`, or the all-platform
 `LadybugDB.Native` meta-package. Native binaries are deliberately not forced on
-consumers by the provider package.
+consumers by the provider package. The current Windows engine also requires the
+OpenSSL 3 runtime libraries (`libcrypto-3-x64.dll` and `libssl-3-x64.dll`) to be
+available to the host process.
 
 ## Architectural boundaries
 
