@@ -96,6 +96,29 @@ Use `ClearRepositoryProviders()` when a host wants to replace the default
 filesystem provider rather than extend it. Ambiguous provider claims produce an
 explicit error instead of being resolved by registration order.
 
+Repository discovery can now be converted into a deterministic incremental
+index plan. The planner uses provider content hashes when available and computes
+SHA-256 hashes otherwise. It compares those inputs with prior unit manifests and
+classifies each selected source as new, changed, unchanged, or deleted; changing
+a plugin version invalidates that plugin's otherwise unchanged units:
+
+```csharp
+var plugins = new HetuBuilder()
+    .AddPlugin(new MyLanguagePlugin())
+    .BuildPluginRegistry();
+var planner = new CodeIndexPlanner(plugins);
+
+CodeIndexPlan plan = await planner.CreatePlanAsync(
+    repository,
+    previousManifests,
+    new CodeIndexPlanningOptions(pluginIds: [new("my-language")]));
+```
+
+Repository IDs remain caller-supplied and should identify the logical repository
+across checkouts and machines. A host that lacks such an identity may derive one
+from a canonical local path, but that fallback is deliberately host-local and
+must not be treated as a portable repository identity.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

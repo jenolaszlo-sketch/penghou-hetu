@@ -187,6 +187,20 @@ Completed repository-source slice:
   and ambiguity detection;
 - filesystem and custom in-memory provider regression tests.
 
+Completed incremental-planning slice:
+
+- deterministic source-to-plugin selection with optional explicit plugin
+  filtering and validation of unknown plugin identities;
+- SHA-256 content hashing when a provider does not supply a trustworthy content
+  identity, while preserving provider hashes without reopening content;
+- stable plugin-and-path-derived index-unit identities;
+- portable per-unit manifests containing plugin version, source path, and source
+  hash;
+- deterministic new, changed, unchanged, and deleted classifications, including
+  plugin-version invalidation;
+- explicit failure for ambiguous plugin claims and duplicate repository entries;
+- cancellation and incremental-planning regression tests.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;
