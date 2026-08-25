@@ -322,13 +322,28 @@ Completed initial structural slice:
 - direct multi-file, partial-type, overload, determinism, public-boundary, and
   full filesystem-to-store lifecycle tests.
 
+Completed provider-neutral project-model slice:
+
+- SDK-style project discovery from supplied `.csproj` content without requiring
+  a local checkout or `MSBuildWorkspace`;
+- deterministic source assignment supporting default compile items, explicit
+  includes and removals, linked sources, and a loose-source fallback;
+- project nodes, project-to-file containment, resolved project dependencies,
+  common parse/compilation options, and dependency-ordered compilations;
+- one atomic index unit per project, project-scoped symbol identities, and
+  cleanup declarations for deleted projects and the superseded repository unit;
+- bounded diagnostics for malformed projects, missing references, cycles, and
+  compiler problems;
+- multi-project, linked-source, compile-removal, dependency, and deleted-project
+  regression coverage.
+
 Next C# slice:
 
-- provider-neutral project and solution descriptors from supplied project
-  inputs;
-- explicit project nodes, source assignment, project references, compilation
-  options, and per-project atomic units;
 - inheritance and interface implementation using resolved Roslyn symbols.
+- semantic calls and references where Roslyn resolves a unique target;
+- import relationships and project/solution-model refinements proven necessary
+  by real repositories. Full MSBuild evaluation remains an optional provider
+  concern rather than a requirement of the core plugin.
 
 Exit criteria:
 

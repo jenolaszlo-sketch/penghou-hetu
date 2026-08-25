@@ -27,14 +27,16 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
     public CodePluginId Id { get; } = new("penghou.hetu.csharp");
     public string Version => PackageVersion;
     public string Language => "csharp";
-    public IReadOnlyCollection<string> FileExtensions => [".cs"];
+    public IReadOnlyCollection<string> FileExtensions =>
+        [".cs", ".csproj", ".sln", ".props", ".targets"];
     public CodeGraphCapabilities Capabilities =>
         CodeGraphCapabilities.Syntax |
         CodeGraphCapabilities.Symbols |
         CodeGraphCapabilities.Types;
 
     public bool CanHandle(string path) =>
-        path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
+        FileExtensions.Any(extension =>
+            path.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
 
     public ValueTask<ICodeGraphExtractionSession> CreateSessionAsync(
         CodeGraphPluginContext context,
@@ -54,7 +56,7 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(sink);
-            var trees = new List<(CodeGraphSource Source, SyntaxTree Tree)>();
+            var content = new SortedDictionary<string, string>(StringComparer.Ordinal);
             foreach (var source in context.Sources.OrderBy(source => source.Path, StringComparer.Ordinal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -64,50 +66,89 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                     Encoding.UTF8,
                     detectEncodingFromByteOrderMarks: true,
                     leaveOpen: false);
-                var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-                var tree = CSharpSyntaxTree.ParseText(
-                    text,
-                    new CSharpParseOptions(LanguageVersion.Latest),
+                content.Add(
                     source.Path,
-                    cancellationToken: cancellationToken);
-                trees.Add((source, tree));
+                    await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
             }
 
-            var compilation = CSharpCompilation.Create(
-                "Penghou.Hetu.CSharp.Index",
-                trees.Select(item => item.Tree),
-                CreatePlatformReferences(),
-                new CSharpCompilationOptions(
-                    OutputKind.DynamicallyLinkedLibrary,
-                    deterministic: true,
-                    concurrentBuild: false));
-            var builder = new GraphBuilder(context, plugin);
-            foreach (var (source, tree) in trees)
+            var projects = CSharpProjectDiscovery.Discover(content);
+            var projectByPath = projects.ToDictionary(
+                project => project.Path,
+                StringComparer.OrdinalIgnoreCase);
+            var compilations = new Dictionary<string, CSharpCompilation>(
+                StringComparer.OrdinalIgnoreCase);
+            var allDiagnostics = new List<Diagnostic>();
+            var warningCodes = new HashSet<string>(StringComparer.Ordinal);
+            var contributingSources = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var project in OrderProjects(projects, projectByPath, warningCodes))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var root = await tree.GetRootAsync(cancellationToken).ConfigureAwait(false);
-                var model = compilation.GetSemanticModel(tree, ignoreAccessibility: true);
-                builder.AddFile(source);
-                builder.AddDeclarations(source.Path, root, model, cancellationToken);
+                var parseOptions = CreateParseOptions(project);
+                var trees = project.SourcePaths
+                    .Where(content.ContainsKey)
+                    .Select(path => CSharpSyntaxTree.ParseText(
+                        content[path],
+                        parseOptions,
+                        path,
+                        cancellationToken: cancellationToken))
+                    .ToArray();
+                var references = CreatePlatformReferences().ToList();
+                var availableDependencies = project.ProjectReferences
+                    .Where(compilations.ContainsKey)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                references.AddRange(availableDependencies
+                    .Select(reference => compilations[reference].ToMetadataReference()));
+                if (project.ProjectReferences.Any(reference => !projectByPath.ContainsKey(reference)))
+                    warningCodes.Add("csharp.project.reference-missing");
+                var compilation = CSharpCompilation.Create(
+                    project.AssemblyName,
+                    trees,
+                    references,
+                    CreateCompilationOptions(project));
+                compilations[project.Path] = compilation;
+                var builder = new GraphBuilder(
+                    context,
+                    plugin,
+                    project,
+                    availableDependencies);
+                builder.AddProject();
+                foreach (var tree in trees)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var root = await tree.GetRootAsync(cancellationToken).ConfigureAwait(false);
+                    var model = compilation.GetSemanticModel(tree, ignoreAccessibility: true);
+                    var source = context.Sources.Single(value => value.Path == tree.FilePath);
+                    builder.AddFile(source);
+                    builder.AddDeclarations(source.Path, root, model, cancellationToken);
+                }
+                await builder.WriteAsync(sink, cancellationToken).ConfigureAwait(false);
+                contributingSources.UnionWith(builder.ContributingSourcePaths);
+                allDiagnostics.AddRange(compilation.GetDiagnostics(cancellationToken));
+                warningCodes.UnionWith(project.WarningCodes);
             }
 
-            await builder.WriteAsync(sink, cancellationToken).ConfigureAwait(false);
-            var diagnostics = compilation.GetDiagnostics(cancellationToken)
+            var diagnostics = allDiagnostics
                 .Where(diagnostic => diagnostic.Severity is DiagnosticSeverity.Warning or DiagnosticSeverity.Error)
                 .ToArray();
-            var warningCodes = diagnostics
+            warningCodes.UnionWith(diagnostics
                 .Select(diagnostic => $"csharp.roslyn.{diagnostic.Id.ToLowerInvariant()}")
-                .Distinct(StringComparer.Ordinal)
-                .Order(StringComparer.Ordinal)
-                .Take(100)
+                .Take(100));
+            var obsoleteUnits = context.Changes
+                .Where(change =>
+                    change.Kind == CodeGraphSourceChangeKind.Deleted &&
+                    change.Path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                .Select(change => new CodeIndexUnitId(
+                    CSharpProjectDiscovery.IndexUnitId(change.Path)))
+                .Append(new CodeIndexUnitId("csharp:repository"))
+                .Distinct()
                 .ToArray();
             return new CodeGraphExtractionResult(
+                obsoleteUnits,
                 sourcesExamined: context.Sources.Count,
-                sourcesContributingFacts: builder.ContributingSources,
+                sourcesContributingFacts: contributingSources.Count,
                 unresolvedRelationships: diagnostics.Count(diagnostic =>
                     diagnostic.Severity == DiagnosticSeverity.Error &&
                     UnresolvedDiagnosticIds.Contains(diagnostic.Id)),
-                warningCodes: warningCodes);
+                warningCodes: warningCodes.Order(StringComparer.Ordinal).Take(100).ToArray());
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -115,7 +156,9 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
 
     private sealed class GraphBuilder(
         CodeGraphPluginContext context,
-        CSharpCodeGraphPlugin plugin)
+        CSharpCodeGraphPlugin plugin,
+        CSharpProjectModel project,
+        IReadOnlySet<string> availableDependencies)
     {
         private readonly SortedDictionary<string, CodeGraphNode> _nodes =
             new(StringComparer.Ordinal);
@@ -126,7 +169,37 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
         private readonly HashSet<string> _contributingSources = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CodeNodeId> _fileNodes = new(StringComparer.Ordinal);
 
-        public int ContributingSources => _contributingSources.Count;
+        public IReadOnlyCollection<string> ContributingSourcePaths => _contributingSources;
+
+        public void AddProject()
+        {
+            var id = ProjectNodeId(project.Path);
+            _nodes.Add(
+                id.Value,
+                new CodeGraphNode(
+                    id,
+                    CodeNodeKinds.Project,
+                    project.Name,
+                    project.Path,
+                    properties: new Dictionary<string, CodePropertyValue>
+                    {
+                        ["language"] = new CodeTextProperty("csharp"),
+                        ["assembly-name"] = new CodeTextProperty(project.AssemblyName),
+                        ["target-framework"] = new CodeTextProperty(project.TargetFramework ?? string.Empty),
+                        ["nullable"] = new CodeTextProperty(project.Nullable ?? string.Empty),
+                        ["implicit-usings"] = new CodeBooleanProperty(project.ImplicitUsings),
+                        ["define-constants"] = new CodeTextListProperty(project.DefineConstants)
+                    }));
+            foreach (var reference in project.ProjectReferences.Where(
+                         availableDependencies.Contains))
+            {
+                AddEdge(
+                    CodeEdgeKinds.DependsOn,
+                    id,
+                    ProjectNodeId(reference),
+                    ProjectLocation());
+            }
+        }
 
         public void AddFile(CodeGraphSource source)
         {
@@ -144,6 +217,11 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                         ["language"] = new CodeTextProperty("csharp"),
                         ["content-hash"] = new CodeTextProperty(source.ContentHash)
                     }));
+            AddEdge(
+                CodeEdgeKinds.Contains,
+                ProjectNodeId(project.Path),
+                id,
+                new CodeLocation(source.Path, 1, 1, 1, 1));
         }
 
         public void AddDeclarations(
@@ -175,7 +253,7 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                 plugin.Id,
                 plugin.Version,
                 context.IndexRunId,
-                new CodeIndexUnitId("csharp:repository"));
+                new CodeIndexUnitId(CSharpProjectDiscovery.IndexUnitId(project.Path)));
             await WriteChunksAsync(
                 _nodes.Values,
                 sink.Limits.MaxNodes,
@@ -205,7 +283,7 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
             ISymbol symbol,
             CodeNodeKind kind)
         {
-            var canonical = CanonicalSymbolKey(symbol);
+            var canonical = ScopedSymbolKey(symbol);
             var symbolId = new CodeSymbolId($"csharp:{Hash(canonical)}");
             var nodeId = NodeId("symbol", canonical);
             var qualifiedName = QualifiedName(symbol);
@@ -248,11 +326,21 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
                 containing is not IAssemblySymbol and not IModuleSymbol &&
                 containing is not INamespaceSymbol { IsGlobalNamespace: true })
             {
-                var containingId = NodeId("symbol", CanonicalSymbolKey(containing));
+                var containingId = NodeId("symbol", ScopedSymbolKey(containing));
                 if (_nodes.ContainsKey(containingId.Value))
                     AddEdge(CodeEdgeKinds.Contains, containingId, nodeId, location);
             }
         }
+
+        private string ScopedSymbolKey(ISymbol symbol) =>
+            $"{project.Path}\n{CanonicalSymbolKey(symbol)}";
+
+        private CodeLocation ProjectLocation() => new(
+            project.Path == "@loose/csharp" ? "@loose/csharp" : project.Path,
+            1,
+            1,
+            1,
+            1);
 
         private static bool NodesEquivalent(CodeGraphNode first, CodeGraphNode second) =>
             first.Id == second.Id &&
@@ -359,6 +447,9 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
     private static CodeNodeId NodeId(string category, string canonical) =>
         new($"csharp:{category}:{Hash(canonical)}");
 
+    private static CodeNodeId ProjectNodeId(string projectPath) =>
+        NodeId("project", projectPath);
+
     private static string Hash(string value) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
@@ -371,6 +462,68 @@ public sealed class CSharpCodeGraphPlugin : ICodeGraphPlugin
             span.Start.Character + 1,
             span.End.Line + 1,
             span.End.Character + 1);
+    }
+
+    private static IReadOnlyList<CSharpProjectModel> OrderProjects(
+        IReadOnlyList<CSharpProjectModel> projects,
+        IReadOnlyDictionary<string, CSharpProjectModel> projectByPath,
+        ISet<string> warningCodes)
+    {
+        var ordered = new List<CSharpProjectModel>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Visit(CSharpProjectModel project)
+        {
+            if (visited.Contains(project.Path))
+                return;
+            if (!visiting.Add(project.Path))
+            {
+                warningCodes.Add("csharp.project.reference-cycle");
+                return;
+            }
+            foreach (var reference in project.ProjectReferences)
+            {
+                if (projectByPath.TryGetValue(reference, out var dependency))
+                    Visit(dependency);
+            }
+            visiting.Remove(project.Path);
+            visited.Add(project.Path);
+            ordered.Add(project);
+        }
+
+        foreach (var project in projects.OrderBy(project => project.Path, StringComparer.Ordinal))
+            Visit(project);
+        return ordered;
+    }
+
+    private static CSharpParseOptions CreateParseOptions(CSharpProjectModel project)
+    {
+        var languageVersion = LanguageVersion.Latest;
+        if (!string.IsNullOrWhiteSpace(project.LanguageVersion) &&
+            LanguageVersionFacts.TryParse(project.LanguageVersion, out var parsed))
+        {
+            languageVersion = parsed;
+        }
+        return new CSharpParseOptions(
+            languageVersion,
+            preprocessorSymbols: project.DefineConstants);
+    }
+
+    private static CSharpCompilationOptions CreateCompilationOptions(CSharpProjectModel project)
+    {
+        var nullable = project.Nullable?.ToLowerInvariant() switch
+        {
+            "enable" => NullableContextOptions.Enable,
+            "annotations" => NullableContextOptions.Annotations,
+            "warnings" => NullableContextOptions.Warnings,
+            _ => NullableContextOptions.Disable
+        };
+        return new(
+            OutputKind.DynamicallyLinkedLibrary,
+            nullableContextOptions: nullable,
+            deterministic: true,
+            concurrentBuild: false);
     }
 
     private static IReadOnlyList<MetadataReference> CreatePlatformReferences()

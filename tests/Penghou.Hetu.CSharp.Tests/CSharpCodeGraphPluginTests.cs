@@ -170,6 +170,92 @@ public sealed class CSharpCodeGraphPluginTests
         }
     }
 
+    [Fact]
+    public async Task ExtractAsync_ModelsProjectsReferencesLinkedFilesAndCompileRemovals()
+    {
+        var extracted = await ExtractAsync(
+            ("Lib/Lib.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <AssemblyName>Example.Library</AssemblyName>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("Lib/Value.cs", "namespace Lib; public class Value { }"),
+            ("App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <DefineConstants>FEATURE_A;FEATURE_B</DefineConstants>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib/Lib.csproj" />
+                    <Compile Include="../Shared/Linked.cs" />
+                    <Compile Remove="Excluded.cs" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("App/App.cs", "namespace App; public class Application { private Lib.Value? _value; }"),
+            ("App/Excluded.cs", "namespace App; public class Excluded { }"),
+            ("Shared/Linked.cs", "namespace App; public class Linked { }"));
+
+        var appProject = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Project && node.QualifiedName == "App/App.csproj");
+        var libProject = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Project && node.QualifiedName == "Lib/Lib.csproj");
+        Assert.Contains(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.DependsOn &&
+                edge.SourceId == appProject.Id && edge.TargetId == libProject.Id);
+        Assert.Contains(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Contains &&
+                edge.SourceId == appProject.Id &&
+                extracted.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName == "Shared/Linked.cs");
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.File && node.QualifiedName == "App/Excluded.cs");
+        Assert.Contains(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Lib.Value");
+        Assert.Equal(2, extracted.UnitIds.Count);
+        Assert.Equal(0, extracted.Result.UnresolvedRelationships);
+        Assert.Contains(
+            extracted.Result.ObsoleteIndexUnits,
+            unit => unit.Value == "csharp:repository");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReportsDeletedProjectUnitForAtomicCleanup()
+    {
+        var context = new CodeGraphPluginContext(
+            new CodeRepositoryId("repo:test"),
+            "memory://test",
+            new CodeIndexRunId("run:test"),
+            [],
+            changes:
+            [
+                new CodeGraphSourceChange(
+                    "Removed/Removed.csproj",
+                    CodeGraphSourceChangeKind.Deleted,
+                    "sha256:previous",
+                    null)
+            ]);
+        var plugin = new CSharpCodeGraphPlugin();
+        var sink = new RecordingSink();
+
+        await using var session = await plugin.CreateSessionAsync(context);
+        var result = await session.ExtractAsync(sink);
+
+        Assert.Contains(
+            result.ObsoleteIndexUnits,
+            unit => unit.Value == CSharpProjectUnitId("Removed/Removed.csproj"));
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {
@@ -194,18 +280,22 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.All(sink.Batches, batch =>
         {
             Assert.Equal(plugin.Id, batch.Origin.PluginId);
-            Assert.Equal("csharp:repository", batch.Origin.IndexUnitId.Value);
+            Assert.StartsWith("csharp:project:", batch.Origin.IndexUnitId.Value, StringComparison.Ordinal);
         });
         return new(
             sink.Batches.SelectMany(batch => batch.Nodes).OrderBy(node => node.Id.Value, StringComparer.Ordinal).ToArray(),
             sink.Batches.SelectMany(batch => batch.Declarations).OrderBy(value => value.Id.Value, StringComparer.Ordinal).ToArray(),
             sink.Batches.SelectMany(batch => batch.Edges).OrderBy(edge => edge.Id.Value, StringComparer.Ordinal).ToArray(),
-            result);
+            result,
+            sink.Batches.Select(batch => batch.Origin.IndexUnitId).Distinct().ToArray());
     }
 
     private static string Hash(string content) =>
         Convert.ToHexStringLower(
             System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+
+    private static string CSharpProjectUnitId(string projectPath) =>
+        $"csharp:project:{Hash(projectPath)}";
 
     private sealed class RecordingSink : ICodeGraphSink
     {
@@ -226,5 +316,6 @@ public sealed class CSharpCodeGraphPluginTests
         IReadOnlyList<CodeGraphNode> Nodes,
         IReadOnlyList<CodeGraphDeclaration> Declarations,
         IReadOnlyList<CodeGraphEdge> Edges,
-        CodeGraphExtractionResult Result);
+        CodeGraphExtractionResult Result,
+        IReadOnlyList<CodeIndexUnitId> UnitIds);
 }

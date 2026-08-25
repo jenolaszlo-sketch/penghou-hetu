@@ -169,8 +169,10 @@ failure-isolated from indexing behavior.
 ## C# structural extraction
 
 `Penghou.Hetu.CSharp` now provides the first useful Roslyn plugin. It consumes
-provider-neutral `.cs` source readers, creates one repository-wide compilation,
-and emits files, namespaces, types, interfaces, delegates, callables,
+provider-neutral source readers, discovers SDK-style `.csproj` inputs without
+requiring a physical filesystem or MSBuild, creates one compilation and atomic
+index unit per project, and emits projects, files, namespaces, types,
+interfaces, delegates, callables,
 properties, fields, parameters, physical declarations, and semantic containment:
 
 ```csharp
@@ -188,8 +190,16 @@ await indexing.IndexAsync(
 Partial declarations share one semantic symbol node while retaining separate
 source declarations. Callable identities distinguish overload signatures. The
 plugin reports stable Roslyn diagnostic codes rather than compiler messages or
-source content. This first slice intentionally does not evaluate MSBuild; project
-and solution modeling is the next C# milestone slice.
+source content.
+
+Project discovery supports default compile items, explicit compile includes and
+removals, linked sources, common compiler properties, and project references.
+Sources outside project directories fall into a deterministic loose-source
+project. Project-reference compilations and `depends-on` edges are created in
+dependency order, while missing and cyclic references are diagnosed rather
+than guessed. This deliberately lightweight model does not evaluate MSBuild
+conditions, imports, custom targets, or solution configurations; full MSBuild
+evaluation remains a future opt-in provider concern.
 
 The plugin version comes from its package informational version, so package
 updates naturally invalidate prior source manifests. Unresolved relationship
