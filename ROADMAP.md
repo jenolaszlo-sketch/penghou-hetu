@@ -370,6 +370,15 @@ maximum depth, maximum nodes, maximum edges, and deterministic ordering.
 Provider-specific query access, if later needed, remains an explicitly advanced
 API outside ordinary consumers.
 
+Completed:
+
+- exact qualified-name lookup with explicit ambiguity and deterministic order;
+- declaration, reference, caller, callee, implementation, dependency,
+  dependent, neighborhood, and impact-set operations;
+- common depth, node, and edge bounds plus store-level evidence filtering;
+- provider-neutral implementation over `ICodeGraphStore` without exposing a
+  persistence query language.
+
 ## Milestone 6 — Ladybug provider
 
 Implement `Penghou.Hetu.Ladybug` as a separate embedded persistence provider.
@@ -388,6 +397,26 @@ Run the same conformance suite against memory and Ladybug. Benchmark ingestion,
 repeat indexing, neighborhood traversal, and deletion on representative Penghou
 repositories before committing to schema optimizations.
 
+Completed durable-provider foundation:
+
+- official LadybugDB 0.19.1 managed integration with host-selected native
+  runtime packages;
+- versioned schema creation and compatibility checks;
+- transactional persistence of validated store mutations and restart replay;
+- the complete `ICodeGraphStore` surface backed by the already-conformant
+  provider-neutral materialization semantics;
+- health reporting plus conformance and durable-reopen integration tests when
+  the native engine is available.
+
+Before calling the optimized Ladybug milestone complete:
+
+- replace the initial durable command-state representation with normalized
+  Ladybug node, relationship, declaration, manifest, and ownership tables;
+- push bounded lookup and traversal into indexed Cypher queries;
+- run the provider conformance suite in CI with every supported native runtime;
+- benchmark ingestion, replacement, reopen, traversal, and deletion before
+  selecting indexes or denormalized projections.
+
 ## Milestone 7 — incremental correctness and resilience
 
 Cover:
@@ -402,6 +431,22 @@ Cover:
 
 A clean extraction completion is not proof of graph integrity. Hetu validates
 ownership, endpoints, identities, and batch invariants before commit.
+
+Covered so far:
+
+- added, changed, unchanged, and deleted source planning, including plugin
+  version invalidation;
+- project-option changes that alter compiler output and deleted projects that
+  atomically remove their former units;
+- partial-symbol survival across owner replacement and deletion;
+- failed, cancelled, incomplete, foreign-owner, and late-terminal ingestion;
+- source races, snapshot identity, corrupted size boundaries, hostile discovery
+  limits, dense cyclic traversal, deterministic ordering, and bounded work;
+- failed and cancelled runs retaining the latest successful incremental state.
+
+Remaining resilience work follows the optimized Ladybug schema: incompatible
+and corrupted durable metadata fixtures, interrupted native transactions, and
+large-store replacement/traversal benchmarks.
 
 ## Milestone 8 — dogfood with Solo
 

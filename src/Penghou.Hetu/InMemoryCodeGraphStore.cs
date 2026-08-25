@@ -539,6 +539,7 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         var selectedKinds = query.EdgeKinds
             .Select(kind => kind.Value)
             .ToHashSet(StringComparer.Ordinal);
+        var selectedEvidence = query.EvidenceKinds.ToHashSet();
         var visited = new HashSet<string>(StringComparer.Ordinal)
         {
             query.StartNodeId.Value
@@ -563,6 +564,8 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
             var candidates = graph.Edges.Values
                 .Where(edge => selectedKinds.Count == 0 ||
                     selectedKinds.Contains(edge.Kind.Value))
+                .Where(edge => selectedEvidence.Count == 0 ||
+                    selectedEvidence.Contains(edge.Evidence.Kind))
                 .Where(edge => query.Direction switch
                 {
                     CodeGraphDirection.Outgoing => edge.SourceId.Value == nodeId,

@@ -171,6 +171,58 @@ public sealed class CSharpCodeGraphPluginTests
     }
 
     [Fact]
+    public async Task IndexingLifecycle_ProjectOptionChangesAndDeletionReplaceCorrectUnits()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-project-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var projectPath = Path.Combine(root, "Example.csproj");
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "Conditional.cs"),
+                "namespace Example; public class Always { }\n#if FEATURE\npublic class Enabled { }\n#endif");
+            var repositoryId = new CodeRepositoryId("repo:csharp-project-lifecycle");
+            var plugin = new CSharpCodeGraphPlugin();
+            var store = new InMemoryCodeGraphStore();
+            var indexing = new CodeIndexingService(
+                new CodeRepositoryProviderRegistry([new FileSystemCodeRepositoryProvider()]),
+                new CodeGraphPluginRegistry([plugin]),
+                store);
+            var descriptor = new CodeRepositoryDescriptor(repositoryId, root);
+
+            await indexing.IndexAsync(descriptor, new("run:without-feature"));
+            Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Enabled"));
+
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <DefineConstants>FEATURE</DefineConstants>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await indexing.IndexAsync(descriptor, new("run:with-feature"));
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Enabled"));
+
+            File.Delete(projectPath);
+            await indexing.IndexAsync(descriptor, new("run:deleted-project"));
+            Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.csproj"));
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "@loose/csharp"));
+            Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Enabled"));
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.Always"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExtractAsync_ModelsProjectsReferencesLinkedFilesAndCompileRemovals()
     {
         var extracted = await ExtractAsync(

@@ -207,6 +207,26 @@ counts use a conservative set of missing symbol, namespace, member, and assembly
 diagnostics; syntax errors remain visible as warning codes without being
 misclassified as relationship failures.
 
+## Provider-neutral queries
+
+`CodeGraphQueryService` provides exact symbol and declaration lookup plus
+bounded references, callers, callees, implementations, dependencies,
+dependents, neighborhoods, and impact sets. Exact qualified-name lookup retains
+all candidates and reports ambiguity instead of selecting one implicitly.
+Traversal limits and evidence-kind filters are applied by the store, so filtered
+queries cannot exceed their declared node, edge, or depth budgets.
+
+## Ladybug persistence
+
+`Penghou.Hetu.Ladybug` provides `LadybugCodeGraphStore`, an embedded durable
+implementation of the same `ICodeGraphStore` contract. It uses the official
+LadybugDB 0.19.1 managed binding, validates its schema version on open, persists
+mutations transactionally, restores state after process restart, and exposes a
+lightweight health result. Hosts must reference one matching native LadybugDB
+runtime package, such as `LadybugDB.Native.win-x64`, or the all-platform
+`LadybugDB.Native` meta-package. Native binaries are deliberately not forced on
+consumers by the provider package.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

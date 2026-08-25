@@ -5,10 +5,16 @@
     <ProjectReference Include="..\Penghou.Hetu.Abstractions\Penghou.Hetu.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="LadybugDB" Version="0.19.1" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>Penghou.Hetu.Ladybug</PackageId>
+    <Description>Durable embedded LadybugDB graph store provider for Penghou.Hetu.</Description>
   </PropertyGroup>
 
 </Project>
