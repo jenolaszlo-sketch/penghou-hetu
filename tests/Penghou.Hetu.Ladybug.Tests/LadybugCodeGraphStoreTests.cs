@@ -1,4 +1,5 @@
 using Penghou.Hetu.Testing;
+using System.Runtime.InteropServices;
 
 namespace Penghou.Hetu.Ladybug.Tests;
 
@@ -62,6 +63,8 @@ public sealed class LadybugCodeGraphStoreTests
 
     private static bool NativeRuntimeIsAvailable(string path)
     {
+        LoadWindowsOpenSslDependency("libcrypto-3-x64.dll");
+        LoadWindowsOpenSslDependency("libssl-3-x64.dll");
         try
         {
             using var store = new LadybugCodeGraphStore(path);
@@ -75,6 +78,20 @@ public sealed class LadybugCodeGraphStoreTests
         {
             DeleteDatabase(path);
         }
+    }
+
+    private static void LoadWindowsOpenSslDependency(string fileName)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var candidate = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Git",
+            "mingw64",
+            "bin",
+            fileName);
+        if (File.Exists(candidate))
+            NativeLibrary.Load(candidate);
     }
 
     private static void DeleteDatabase(string path)

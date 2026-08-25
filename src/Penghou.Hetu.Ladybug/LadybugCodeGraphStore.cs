@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using LadybugDB;
 
 namespace Penghou.Hetu;
@@ -14,6 +15,7 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
     private List<PersistedCommand> _commands;
     private InMemoryCodeGraphStore _inner;
     private bool _disposed;
+    private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
     public LadybugCodeGraphStore(string databasePath)
     {
@@ -106,7 +108,8 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 
     private void Persist(IReadOnlyList<PersistedCommand> commands)
     {
-        var payload = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(commands));
+        var payload = Convert.ToBase64String(
+            JsonSerializer.SerializeToUtf8Bytes(commands, SerializerOptions));
         Execute("BEGIN TRANSACTION");
         try
         {
@@ -132,7 +135,9 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             throw new LadybugCodeGraphSchemaException(version, CurrentSchemaVersion);
         var payload = row[1]?.ToString() ??
             throw new InvalidDataException("Ladybug Hetu state payload is missing.");
-        return JsonSerializer.Deserialize<List<PersistedCommand>>(Convert.FromBase64String(payload)) ?? [];
+        return JsonSerializer.Deserialize<List<PersistedCommand>>(
+            Convert.FromBase64String(payload),
+            SerializerOptions) ?? [];
     }
 
     private void Execute(string query)
@@ -148,6 +153,13 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             out var version)
             ? version
             : throw new InvalidDataException("Ladybug Hetu schema version is missing or invalid.");
+
+    private static JsonSerializerOptions CreateSerializerOptions()
+    {
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(new RepositoryManifestConverter());
+        return options;
+    }
 
     private static async Task<InMemoryCodeGraphStore> ReplayAsync(
         IReadOnlyList<PersistedCommand> commands,
@@ -181,6 +193,38 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
         CodeRepositoryId? RepositoryId = null,
         CodePluginId? PluginId = null,
         CodeIndexUnitId? UnitId = null);
+
+    private sealed class RepositoryManifestConverter : JsonConverter<CodeRepositoryManifest>
+    {
+        public override CodeRepositoryManifest Read(
+            ref Utf8JsonReader reader,
+            Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            using var document = JsonDocument.ParseValue(ref reader);
+            var root = document.RootElement;
+            return new(
+                new CodeRepositoryId(root.GetProperty("Id").GetProperty("Value").GetString()!),
+                root.TryGetProperty("DisplayName", out var name) ? name.GetString() : null,
+                root.TryGetProperty("SourceUri", out var uri) ? uri.GetString() : null,
+                root.GetProperty("RegisteredAt").GetDateTimeOffset());
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer,
+            CodeRepositoryManifest value,
+            JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteStartObject("Id");
+            writer.WriteString("Value", value.Id.Value);
+            writer.WriteEndObject();
+            writer.WriteString("DisplayName", value.DisplayName);
+            writer.WriteString("SourceUri", value.SourceUri);
+            writer.WriteString("RegisteredAt", value.RegisteredAt);
+            writer.WriteEndObject();
+        }
+    }
 }
 
 public sealed record LadybugCodeGraphStoreHealth(bool IsHealthy, int SchemaVersion, int PersistedCommandCount);
