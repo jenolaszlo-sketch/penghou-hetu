@@ -33,8 +33,9 @@ ANTLR parsers, hand-written parsers, or other deterministic extraction tools.
 ## Status
 
 Hetu is at the initial architecture and scaffolding stage. The public contracts
-are not stable and no package has been published yet. See [ROADMAP.md](ROADMAP.md)
-for the implementation milestones and semantic invariants.
+and in-memory runtime are implemented, but the API remains preview-quality and
+no package has been published yet. See [ROADMAP.md](ROADMAP.md) for the
+implementation milestones and semantic invariants.
 
 ## Planned packages
 
@@ -49,6 +50,32 @@ for the implementation milestones and semantic invariants.
 The future `Penghou.Hetu.Generator` project is reserved for deterministic
 generation of language plugins from grammars and declarative graph mappings.
 It is intentionally outside the first milestone.
+
+## Runtime foundation
+
+The current runtime supports deterministic plugin registration, strict bounded
+batch ingestion, atomic index-unit replacement, repository and index-run
+manifests, exact symbol/declaration lookup, and bounded graph traversal:
+
+```csharp
+var store = new InMemoryCodeGraphStore();
+var repositoryId = new CodeRepositoryId("repo:my-app");
+var runId = new CodeIndexRunId("run:initial");
+var pluginId = new CodePluginId("hetu-csharp");
+
+await store.UpsertRepositoryAsync(new CodeRepositoryManifest(repositoryId));
+await store.StoreIndexRunAsync(new CodeIndexRunManifest(
+    repositoryId,
+    runId,
+    DateTimeOffset.UtcNow,
+    plugins: [pluginId]));
+
+await using var sink = new CodeGraphIngestionSink(store);
+// Extraction sessions stream owned CodeGraphBatch values to the sink.
+```
+
+`Penghou.Hetu.Testing` contains a reusable conformance suite that every durable
+store provider must pass.
 
 ## Architectural boundaries
 

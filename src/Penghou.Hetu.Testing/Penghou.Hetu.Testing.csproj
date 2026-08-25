@@ -2,12 +2,29 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Penghou.Hetu\Penghou.Hetu.csproj" />
+    <ProjectReference Include="..\Penghou.Hetu.Abstractions\Penghou.Hetu.Abstractions.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>Penghou.Hetu.Testing</PackageId>
+    <Title>Penghou Hetu Testing</Title>
+    <Authors>Penghou.Hetu contributors</Authors>
+    <Description>Reusable conformance tests for Penghou.Hetu graph stores.</Description>
+    <PackageTags>code-analysis;knowledge-graph;testing;conformance</PackageTags>
+    <RepositoryUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsPackable>true</IsPackable>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

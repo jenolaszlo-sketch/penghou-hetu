@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Penghou.Hetu\Penghou.Hetu.csproj" />
+    <ProjectReference Include="..\Penghou.Hetu.Abstractions\Penghou.Hetu.Abstractions.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

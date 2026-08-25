@@ -131,7 +131,7 @@ Delivered in the initial contract slice:
 - serialization, public API, dependency-boundary, malformed-input,
   partial-symbol, cross-file, and syntax/project-aware plugin tests.
 
-## Milestone 2 — atomic in-memory runtime
+## Milestone 2 — atomic in-memory runtime (completed)
 
 Implement in `Penghou.Hetu`:
 
@@ -152,6 +152,24 @@ Exit criteria:
 - shared semantic nodes survive removal of one contributing declaration;
 - cancellation and failed validation leave the previous graph intact;
 - traversal limits and deterministic ordering are covered by tests.
+
+Delivered:
+
+- provider-neutral repository, index-run, replacement, lookup, and bounded
+  traversal store contracts;
+- strict batch validation for counts, duplicate identities, property sizes,
+  list sizes, and per-index-unit cumulative work;
+- streamed ingestion that keeps incomplete or rejected units invisible;
+- atomic in-memory replacement with per-owner contributions;
+- shared semantic-node survival across partial declaration removal;
+- exact node, symbol, qualified-name, and declaration lookup;
+- cycle-safe traversal with direction, edge-kind, depth, node, and edge bounds;
+- deterministic plugin registration and explicit ambiguity errors;
+- idempotent manifest and replacement retries with running-to-terminal run
+  transitions;
+- privacy-safe ingestion counts and bounded warning codes;
+- a reusable provider conformance suite covering manifests, atomicity,
+  cancellation, idempotency, ownership, shared nodes, and traversal.
 
 ## Milestone 3 — repository discovery and indexing lifecycle
 

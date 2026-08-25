@@ -8,6 +8,23 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackageId>Penghou.Hetu</PackageId>
+    <Title>Penghou Hetu</Title>
+    <Authors>Penghou.Hetu contributors</Authors>
+    <Description>Embedded code graph runtime, indexing orchestration, and deterministic queries for .NET.</Description>
+    <PackageTags>code-analysis;knowledge-graph;repository;agents;static-analysis</PackageTags>
+    <RepositoryUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsPackable>true</IsPackable>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
