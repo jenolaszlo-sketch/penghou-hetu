@@ -24,8 +24,18 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeIndexRunStatus",
             "Penghou.Hetu.CodeIndexUnitReplacement",
             "Penghou.Hetu.CodeRepositoryManifest",
+            "Penghou.Hetu.CodeRepositoryDescriptor",
+            "Penghou.Hetu.CodeRepositoryEntry",
+            "Penghou.Hetu.CodeRepositoryEnumerationLimitException",
+            "Penghou.Hetu.CodeRepositoryEnumerationOptions",
+            "Penghou.Hetu.CodeRepositoryProviderNotFoundException",
+            "Penghou.Hetu.CodeRepositoryProviderRegistry",
+            "Penghou.Hetu.CodeRepositoryProviderSelectionException",
+            "Penghou.Hetu.FileSystemCodeRepositoryProvider",
             "Penghou.Hetu.HetuBuilder",
             "Penghou.Hetu.ICodeGraphStore",
+            "Penghou.Hetu.ICodeRepositoryProvider",
+            "Penghou.Hetu.ICodeRepositorySource",
             "Penghou.Hetu.InMemoryCodeGraphStore"
         }.Order(StringComparer.Ordinal).ToArray();
 

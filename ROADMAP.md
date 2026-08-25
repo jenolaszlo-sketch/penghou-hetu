@@ -173,6 +173,20 @@ Delivered:
 
 ## Milestone 3 — repository discovery and indexing lifecycle
 
+Completed repository-source slice:
+
+- provider-neutral repository descriptors, entries, lazy enumeration, and
+  content-opening contracts;
+- a default local filesystem provider with normalized repository-relative
+  paths, deterministic enumeration, configurable directory exclusions, depth
+  and entry limits, and conservative reparse-point handling;
+- consistent-snapshot and provider snapshot-identity signals for future Git,
+  VFS, archive, IDE, and remote-workspace implementations;
+- deterministic provider registration through `HetuBuilder`, including custom
+  providers, complete default replacement, explicit missing-provider errors,
+  and ambiguity detection;
+- filesystem and custom in-memory provider regression tests.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;

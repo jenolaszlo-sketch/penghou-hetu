@@ -77,6 +77,25 @@ await using var sink = new CodeGraphIngestionSink(store);
 `Penghou.Hetu.Testing` contains a reusable conformance suite that every durable
 store provider must pass.
 
+Repository discovery is provider-based. Local filesystem discovery is
+registered by default, while hosts can add a VFS, Git tree, archive, remote
+workspace, or in-memory implementation without changing language plugins:
+
+```csharp
+var sources = new HetuBuilder()
+    .AddRepositoryProvider(new MyVirtualRepositoryProvider())
+    .BuildRepositoryProviderRegistry();
+
+await using var repository = await sources.OpenAsync(
+    new CodeRepositoryDescriptor(
+        new CodeRepositoryId("repo:my-app"),
+        "vfs://workspaces/my-app"));
+```
+
+Use `ClearRepositoryProviders()` when a host wants to replace the default
+filesystem provider rather than extend it. Ambiguous provider claims produce an
+explicit error instead of being resolved by registration order.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

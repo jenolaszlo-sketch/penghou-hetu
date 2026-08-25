@@ -86,6 +86,8 @@ public sealed class CodeGraphPluginSelectionException : Exception
 public sealed class HetuBuilder
 {
     private readonly List<ICodeGraphPlugin> _plugins = [];
+    private readonly List<ICodeRepositoryProvider> _repositoryProviders =
+        [new FileSystemCodeRepositoryProvider()];
 
     public HetuBuilder AddPlugin(ICodeGraphPlugin plugin)
     {
@@ -95,4 +97,20 @@ public sealed class HetuBuilder
     }
 
     public CodeGraphPluginRegistry BuildPluginRegistry() => new(_plugins);
+
+    public HetuBuilder AddRepositoryProvider(ICodeRepositoryProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        _repositoryProviders.Add(provider);
+        return this;
+    }
+
+    public HetuBuilder ClearRepositoryProviders()
+    {
+        _repositoryProviders.Clear();
+        return this;
+    }
+
+    public CodeRepositoryProviderRegistry BuildRepositoryProviderRegistry() =>
+        new(_repositoryProviders);
 }
