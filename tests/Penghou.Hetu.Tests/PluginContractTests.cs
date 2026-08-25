@@ -88,7 +88,7 @@ public sealed class PluginContractTests
         CodeGraphPluginContext context,
         bool projectAware) : ICodeGraphExtractionSession
     {
-        public async ValueTask ExtractAsync(
+        public async ValueTask<CodeGraphExtractionResult> ExtractAsync(
             ICodeGraphSink sink,
             CancellationToken cancellationToken = default)
         {
@@ -118,6 +118,8 @@ public sealed class PluginContractTests
                         completesIndexUnit: true),
                     cancellationToken);
             }
+
+            return new CodeGraphExtractionResult();
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

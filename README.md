@@ -125,6 +125,26 @@ plugin may atomically own a project or solution unit. Plugin contexts therefore
 provide repeatable `CodeGraphSource` readers and only an optional provider-defined
 location hint—plugins must not assume repositories live on a local filesystem.
 
+`CodeIndexingService` now coordinates the first complete lifecycle: repository
+opening, source planning, plugin execution, bounded ingestion, obsolete-unit
+cleanup, and atomic publication of the latest successful source state. Hosts
+supply the run identity, making retries and telemetry correlation explicit:
+
+```csharp
+var indexing = new CodeIndexingService(repositoryProviders, plugins, store);
+var result = await indexing.IndexAsync(
+    new CodeRepositoryDescriptor(
+        new CodeRepositoryId("repo:my-app"),
+        repositoryLocation),
+    new CodeIndexRunId("run:2026-08-25T12:00:00Z"),
+    new CodeIndexingOptions(maxConcurrentPlugins: 2));
+```
+
+Plugins see the complete current source set plus exact source transitions. They
+remain responsible for choosing atomic index units and report obsolete unit IDs
+after extraction. Hetu refuses to complete a run if any streamed unit remains
+buffered or rejected.
+
 ## Architectural boundaries
 
 - Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.

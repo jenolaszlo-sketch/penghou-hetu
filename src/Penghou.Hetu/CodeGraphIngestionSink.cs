@@ -113,6 +113,42 @@ public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Verifies that every started index unit completed successfully before an
+    /// indexing run is committed.
+    /// </summary>
+    public async ValueTask CompleteAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_pending.Count == 0 && _rejected.Count == 0)
+                return;
+
+            var errors = _pending.Keys
+                .Concat(_rejected)
+                .Distinct()
+                .OrderBy(key => key.PluginId, StringComparer.Ordinal)
+                .ThenBy(key => key.IndexUnitId, StringComparer.Ordinal)
+                .Take(100)
+                .Select(key => Error(
+                    CodeGraphValidationErrorKind.IncompleteIndexUnit,
+                    "ingestion.index-unit.incomplete",
+                    "A plugin did not successfully complete an index unit.",
+                    key.IndexUnitId))
+                .ToArray();
+            throw new CodeGraphBatchRejectedException(
+                "Indexing cannot complete while plugin index units remain incomplete or rejected.",
+                errors);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -187,8 +223,9 @@ public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
     private static CodeGraphValidationError Error(
         CodeGraphValidationErrorKind kind,
         string code,
-        string message) =>
-        new(kind, code, message);
+        string message,
+        string? factId = null) =>
+        new(kind, code, message, factId);
 
     private readonly record struct OwnerKey(
         string RepositoryId,

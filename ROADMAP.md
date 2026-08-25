@@ -212,6 +212,24 @@ Lifecycle boundary hardening:
 - the provider conformance suite verifies successful incremental-state
   publication and round-tripping.
 
+Completed lifecycle-execution foundation:
+
+- provider-neutral orchestration from repository opening through incremental
+  planning, extraction, ingestion, cleanup, and successful state publication;
+- exact new, changed, unchanged, and deleted source transitions supplied to
+  plugins alongside the complete current source set;
+- plugin-owned obsolete index-unit declarations, avoiding file-to-unit
+  assumptions for project- and solution-aware analyzers;
+- configurable bounded plugin concurrency and existing bounded batch ingestion;
+- completed, failed, and cancelled run transitions that retain the last
+  successful incremental state on failure;
+- privacy-safe lifecycle counts and planning, extraction, and persistence
+  timings with failure-isolated observers;
+- an explicit terminal ingestion check so incomplete buffered units cannot be
+  discarded while a run is reported successful;
+- end-to-end tests for successful indexing, deleted-source cleanup, failed-run
+  state retention, diagnostics isolation, and incomplete-unit rejection.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;

@@ -8,7 +8,8 @@ public sealed record CodeGraphPluginContext
         string? repositoryLocation,
         CodeIndexRunId indexRunId,
         IReadOnlyList<CodeGraphSource> sources,
-        IReadOnlyDictionary<string, string>? settings = null)
+        IReadOnlyDictionary<string, string>? settings = null,
+        IReadOnlyList<CodeGraphSourceChange>? changes = null)
     {
         RepositoryId = repositoryId ??
             throw new ArgumentNullException(nameof(repositoryId));
@@ -35,6 +36,12 @@ public sealed record CodeGraphPluginContext
                 nameof(sources));
         }
 
+        Changes = changes?.ToArray() ?? [];
+        if (Changes.Any(change => change is null))
+            throw new ArgumentException("Plugin changes cannot contain null entries.", nameof(changes));
+        if (Changes.GroupBy(change => change.Path, StringComparer.Ordinal).Any(group => group.Count() > 1))
+            throw new ArgumentException("Plugin changes must have unique paths.", nameof(changes));
+
         Settings = CopySettings(settings);
     }
 
@@ -46,6 +53,7 @@ public sealed record CodeGraphPluginContext
     public string? RepositoryLocation { get; }
     public CodeIndexRunId IndexRunId { get; }
     public IReadOnlyList<CodeGraphSource> Sources { get; }
+    public IReadOnlyList<CodeGraphSourceChange> Changes { get; }
     public IReadOnlyDictionary<string, string> Settings { get; }
 
     private static IReadOnlyDictionary<string, string> CopySettings(
@@ -68,6 +76,63 @@ public sealed record CodeGraphPluginContext
     }
 }
 
+public enum CodeGraphSourceChangeKind
+{
+    New = 0,
+    Changed = 1,
+    Unchanged = 2,
+    Deleted = 3
+}
+
+/// <summary>Describes one exact source transition visible to an extraction plugin.</summary>
+public sealed record CodeGraphSourceChange
+{
+    public CodeGraphSourceChange(
+        string path,
+        CodeGraphSourceChangeKind kind,
+        string? previousHash,
+        string? currentHash)
+    {
+        Path = ContractValue.RelativePath(path, nameof(path));
+        if (!Enum.IsDefined(kind))
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        if (kind == CodeGraphSourceChangeKind.New &&
+                (previousHash is not null || currentHash is null) ||
+            kind == CodeGraphSourceChangeKind.Deleted &&
+                (previousHash is null || currentHash is not null) ||
+            kind is CodeGraphSourceChangeKind.Changed or CodeGraphSourceChangeKind.Unchanged &&
+                (previousHash is null || currentHash is null))
+        {
+            throw new ArgumentException("Source hashes do not match the change kind.");
+        }
+
+        Kind = kind;
+        PreviousHash = previousHash;
+        CurrentHash = currentHash;
+    }
+
+    public string Path { get; }
+    public CodeGraphSourceChangeKind Kind { get; }
+    public string? PreviousHash { get; }
+    public string? CurrentHash { get; }
+}
+
+/// <summary>Reports plugin-owned index units that are no longer part of its output.</summary>
+public sealed record CodeGraphExtractionResult
+{
+    public CodeGraphExtractionResult(IReadOnlyCollection<CodeIndexUnitId>? obsoleteIndexUnits = null)
+    {
+        ObsoleteIndexUnits = obsoleteIndexUnits?
+            .Distinct()
+            .OrderBy(id => id.Value, StringComparer.Ordinal)
+            .ToArray() ?? [];
+        if (ObsoleteIndexUnits.Any(id => id is null))
+            throw new ArgumentException("Obsolete units cannot contain null identities.", nameof(obsoleteIndexUnits));
+    }
+
+    public IReadOnlyCollection<CodeIndexUnitId> ObsoleteIndexUnits { get; }
+}
+
 /// <summary>Discovers normalized graph facts for one language.</summary>
 public interface ICodeGraphPlugin
 {
@@ -87,7 +152,7 @@ public interface ICodeGraphPlugin
 /// <summary>A repository-aware extraction lifetime owned by one plugin.</summary>
 public interface ICodeGraphExtractionSession : IAsyncDisposable
 {
-    ValueTask ExtractAsync(
+    ValueTask<CodeGraphExtractionResult> ExtractAsync(
         ICodeGraphSink sink,
         CancellationToken cancellationToken = default);
 }

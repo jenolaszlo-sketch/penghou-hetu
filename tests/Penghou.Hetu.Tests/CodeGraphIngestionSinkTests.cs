@@ -3,6 +3,27 @@ namespace Penghou.Hetu.Tests;
 public sealed class CodeGraphIngestionSinkTests
 {
     [Fact]
+    public async Task CompleteAsync_RejectsAnIncompleteBufferedUnit()
+    {
+        var setup = await SetupAsync();
+        await using var sink = new CodeGraphIngestionSink(setup.Store);
+        await sink.WriteBatchAsync(new CodeGraphBatch(
+            setup.Origin,
+            nodes: [Node("pending")],
+            completesIndexUnit: false));
+
+        var exception = await Assert.ThrowsAsync<CodeGraphBatchRejectedException>(async () =>
+            await sink.CompleteAsync());
+
+        Assert.Contains(
+            exception.Errors,
+            error => error.Code == "ingestion.index-unit.incomplete");
+        Assert.Null(await setup.Store.GetNodeAsync(
+            setup.Origin.RepositoryId,
+            new CodeNodeId("node:pending")));
+    }
+
+    [Fact]
     public async Task IncompleteBatches_AreNotVisibleBeforeCompletion()
     {
         var setup = await SetupAsync();
