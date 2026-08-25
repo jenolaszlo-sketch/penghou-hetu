@@ -7,6 +7,8 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
     private readonly Dictionary<string, CodeRepositoryManifest> _repositories =
         new(StringComparer.Ordinal);
     private readonly Dictionary<RunKey, CodeIndexRunManifest> _runs = [];
+    private readonly Dictionary<string, CodeRepositoryIndexState> _indexStates =
+        new(StringComparer.Ordinal);
     private Dictionary<OwnerKey, CodeIndexUnitReplacement> _units = [];
 
     public ValueTask UpsertRepositoryAsync(
@@ -38,6 +40,13 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
     {
         ArgumentNullException.ThrowIfNull(run);
         cancellationToken.ThrowIfCancellationRequested();
+        if (run.Status == CodeIndexRunStatus.Completed)
+        {
+            throw new ArgumentException(
+                "Successful runs must be stored with CompleteIndexRunAsync.",
+                nameof(run));
+        }
+
         lock (_gate)
         {
             if (!_repositories.ContainsKey(run.RepositoryId.Value))
@@ -74,6 +83,70 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
             return new(_runs.GetValueOrDefault(
                 new RunKey(repositoryId.Value, runId.Value)));
         }
+    }
+
+    public ValueTask CompleteIndexRunAsync(
+        CodeIndexRunManifest completedRun,
+        CodeRepositoryIndexState state,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(completedRun);
+        ArgumentNullException.ThrowIfNull(state);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (completedRun.Status != CodeIndexRunStatus.Completed ||
+            completedRun.CompletedAt is null)
+        {
+            throw new ArgumentException(
+                "Atomic index completion requires a completed run manifest.",
+                nameof(completedRun));
+        }
+
+        if (state.RepositoryId != completedRun.RepositoryId ||
+            state.IndexRunId != completedRun.Id)
+        {
+            throw new ArgumentException(
+                "Index state ownership must match the completed run.",
+                nameof(state));
+        }
+
+        lock (_gate)
+        {
+            var key = new RunKey(completedRun.RepositoryId.Value, completedRun.Id.Value);
+            if (!_runs.TryGetValue(key, out var running))
+            {
+                throw new InvalidOperationException(
+                    "The index run must be registered before it can be completed.");
+            }
+
+            if (RunsEquivalent(running, completedRun))
+            {
+                if (_indexStates.TryGetValue(state.RepositoryId.Value, out var existing) &&
+                    StatesEquivalent(existing, state))
+                {
+                    return ValueTask.CompletedTask;
+                }
+
+                throw new InvalidOperationException(
+                    "A completed index run cannot publish different incremental state.");
+            }
+
+            ValidateRunTransition(running, completedRun);
+            cancellationToken.ThrowIfCancellationRequested();
+            _runs[key] = completedRun;
+            _indexStates[state.RepositoryId.Value] = state;
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<CodeRepositoryIndexState?> GetLatestIndexStateAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+            return new(_indexStates.GetValueOrDefault(repositoryId.Value));
     }
 
     public ValueTask ReplaceIndexUnitAsync(
@@ -256,6 +329,20 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         first.CompletedAt == second.CompletedAt &&
         first.Plugins.Count == second.Plugins.Count &&
         first.Plugins.All(second.Plugins.Contains);
+
+    private static bool StatesEquivalent(
+        CodeRepositoryIndexState first,
+        CodeRepositoryIndexState second) =>
+        first.RepositoryId == second.RepositoryId &&
+        first.IndexRunId == second.IndexRunId &&
+        first.SnapshotIdentity == second.SnapshotIdentity &&
+        first.IsConsistentSnapshot == second.IsConsistentSnapshot &&
+        first.Sources.Count == second.Sources.Count &&
+        first.Sources.Zip(second.Sources).All(pair =>
+            pair.First.PluginId == pair.Second.PluginId &&
+            pair.First.PluginVersion == pair.Second.PluginVersion &&
+            pair.First.SourcePath == pair.Second.SourcePath &&
+            pair.First.SourceHash == pair.Second.SourceHash);
 
     private static void ValidateRunTransition(
         CodeIndexRunManifest existing,

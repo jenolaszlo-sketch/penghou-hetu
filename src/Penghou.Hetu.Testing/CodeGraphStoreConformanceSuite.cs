@@ -210,9 +210,23 @@ public static class CodeGraphStoreConformanceSuite
             CodeIndexRunStatus.Completed,
             startedAt.AddSeconds(1),
             [pluginId]);
-        await store.StoreIndexRunAsync(completed, cancellationToken)
+        var indexState = new CodeRepositoryIndexState(
+            repositoryId,
+            runId,
+            [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+            "snapshot:conformance",
+            true);
+        await store.CompleteIndexRunAsync(completed, indexState, cancellationToken)
             .ConfigureAwait(false);
-        await store.StoreIndexRunAsync(completed, cancellationToken)
+        await store.CompleteIndexRunAsync(
+            completed,
+            new CodeRepositoryIndexState(
+                repositoryId,
+                runId,
+                [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+                "snapshot:conformance",
+                true),
+            cancellationToken)
             .ConfigureAwait(false);
         Require(
             RunsEquivalent(
@@ -221,6 +235,43 @@ public static class CodeGraphStoreConformanceSuite
                 completed),
             "index run transition and round-trip");
         checks.Add("index-run-transition");
+        var restoredState = await store.GetLatestIndexStateAsync(
+            repositoryId,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            restoredState is not null &&
+            restoredState.IndexRunId == runId &&
+            restoredState.SnapshotIdentity == "snapshot:conformance" &&
+            restoredState.IsConsistentSnapshot &&
+            restoredState.Sources.Count == 1 &&
+            restoredState.Sources[0].SourcePath == "src/Current.cs",
+            "successful source state round-trip");
+        checks.Add("successful-source-state-round-trip");
+
+        var failedRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        var failedRunning = new CodeIndexRunManifest(
+            repositoryId,
+            failedRunId,
+            startedAt.AddSeconds(2),
+            plugins: [pluginId]);
+        await store.StoreIndexRunAsync(failedRunning, cancellationToken)
+            .ConfigureAwait(false);
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                failedRunId,
+                failedRunning.StartedAt,
+                CodeIndexRunStatus.Failed,
+                failedRunning.StartedAt.AddSeconds(1),
+                [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        var stateAfterFailure = await store.GetLatestIndexStateAsync(
+            repositoryId,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            stateAfterFailure?.IndexRunId == runId,
+            "failed runs must retain the last successful source state");
+        checks.Add("failed-run-retains-source-state");
 
         await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>
             await store.ReplaceIndexUnitAsync(

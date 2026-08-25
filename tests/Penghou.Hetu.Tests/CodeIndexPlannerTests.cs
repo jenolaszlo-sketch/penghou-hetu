@@ -110,11 +110,8 @@ public sealed class CodeIndexPlannerTests
         Assert.Contains("plugin:missing", exception.Message, StringComparison.Ordinal);
     }
 
-    private static CodeIndexUnitManifest Manifest(FakePlugin plugin, string path, string hash) =>
-        new(plugin.Id, plugin.Version, Unit(plugin.Id, path), path, hash);
-
-    private static CodeIndexUnitId Unit(CodePluginId pluginId, string path) =>
-        new($"{pluginId.Value}:test:{path}");
+    private static CodeSourceManifest Manifest(FakePlugin plugin, string path, string hash) =>
+        new(plugin.Id, plugin.Version, path, hash);
 
     private static string Hash(string content) =>
         $"sha256:{Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(content)))}";

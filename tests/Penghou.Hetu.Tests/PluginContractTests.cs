@@ -35,7 +35,7 @@ public sealed class PluginContractTests
         Assert.Throws<ArgumentException>(() =>
             new CodeGraphPluginContext(
                 new CodeRepositoryId("repo:test"),
-                Path.GetTempPath(),
+                "vfs://workspace/test",
                 new CodeIndexRunId("run:one"),
                 [source, source]));
     }
@@ -43,12 +43,20 @@ public sealed class PluginContractTests
     private static CodeGraphPluginContext CreateContext() =>
         new(
             new CodeRepositoryId("repo:test"),
-            Path.GetTempPath(),
+            "vfs://workspace/test",
             new CodeIndexRunId("run:one"),
             [
                 Source("src/One.cs", "class One {}"),
                 Source("src/Two.cs", "class Two : One {}")
             ]);
+
+    [Fact]
+    public void PluginContext_PreservesProviderLocationWithoutTreatingItAsAPath()
+    {
+        var context = CreateContext();
+
+        Assert.Equal("vfs://workspace/test", context.RepositoryLocation);
+    }
 
     private static CodeGraphSource Source(string path, string content) =>
         new(

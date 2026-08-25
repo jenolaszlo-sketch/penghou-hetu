@@ -2,44 +2,6 @@ using System.Security.Cryptography;
 
 namespace Penghou.Hetu;
 
-/// <summary>Describes the persisted input identity of one plugin-owned index unit.</summary>
-public sealed record CodeIndexUnitManifest
-{
-    public CodeIndexUnitManifest(
-        CodePluginId pluginId,
-        string pluginVersion,
-        CodeIndexUnitId indexUnitId,
-        string sourcePath,
-        string sourceHash)
-    {
-        PluginId = pluginId ?? throw new ArgumentNullException(nameof(pluginId));
-        PluginVersion = ValidateIdentifier(pluginVersion, nameof(pluginVersion));
-        IndexUnitId = indexUnitId ?? throw new ArgumentNullException(nameof(indexUnitId));
-        SourcePath = CodeRepositoryEntry.NormalizeRelativePath(sourcePath);
-        SourceHash = ValidateIdentifier(sourceHash, nameof(sourceHash));
-    }
-
-    public CodePluginId PluginId { get; }
-    public string PluginVersion { get; }
-    public CodeIndexUnitId IndexUnitId { get; }
-    public string SourcePath { get; }
-    public string SourceHash { get; }
-
-    private static string ValidateIdentifier(string value, string parameterName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
-        if (!string.Equals(value, value.Trim(), StringComparison.Ordinal) ||
-            value.Any(char.IsControl))
-        {
-            throw new ArgumentException(
-                "Values cannot have surrounding whitespace or contain control characters.",
-                parameterName);
-        }
-
-        return value;
-    }
-}
-
 public enum CodeIndexPlanStatus
 {
     New = 0,
@@ -53,7 +15,7 @@ public sealed record CodeIndexPlanItem
 {
     public CodeIndexPlanItem(
         CodeIndexPlanStatus status,
-        CodeIndexUnitManifest manifest,
+        CodeSourceManifest manifest,
         CodeRepositoryEntry? source)
     {
         if (!Enum.IsDefined(status))
@@ -71,7 +33,7 @@ public sealed record CodeIndexPlanItem
     }
 
     public CodeIndexPlanStatus Status { get; }
-    public CodeIndexUnitManifest Manifest { get; }
+    public CodeSourceManifest Manifest { get; }
     public CodeRepositoryEntry? Source { get; }
 }
 
@@ -114,7 +76,7 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
 
     public async ValueTask<CodeIndexPlan> CreatePlanAsync(
         ICodeRepositorySource repository,
-        IReadOnlyCollection<CodeIndexUnitManifest>? previousManifests = null,
+        IReadOnlyCollection<CodeSourceManifest>? previousManifests = null,
         CodeIndexPlanningOptions? options = null,
         CancellationToken cancellationToken = default)
     {
@@ -144,10 +106,9 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
 
             var hash = entry.ContentHash ??
                 await ComputeHashAsync(repository, entry, cancellationToken).ConfigureAwait(false);
-            var manifest = new CodeIndexUnitManifest(
+            var manifest = new CodeSourceManifest(
                 plugin.Id,
                 plugin.Version,
-                CreateIndexUnitId(plugin.Id, entry.Path),
                 entry.Path,
                 hash);
             var key = ManifestKey(manifest);
@@ -190,12 +151,6 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
         return $"sha256:{Convert.ToHexStringLower(hash)}";
     }
 
-    private static CodeIndexUnitId CreateIndexUnitId(CodePluginId pluginId, string path)
-    {
-        var bytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(path));
-        return new CodeIndexUnitId($"{pluginId.Value}:source:{Convert.ToHexStringLower(bytes)}");
-    }
-
-    private static string ManifestKey(CodeIndexUnitManifest manifest) =>
+    private static string ManifestKey(CodeSourceManifest manifest) =>
         $"{manifest.PluginId.Value}\n{manifest.SourcePath}";
 }

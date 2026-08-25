@@ -11,6 +11,10 @@ public interface ICodeGraphStore
         CodeRepositoryId repositoryId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Stores a running, failed, or cancelled run. Successful completion must use
+    /// <see cref="CompleteIndexRunAsync"/> so source state is published atomically.
+    /// </summary>
     ValueTask StoreIndexRunAsync(
         CodeIndexRunManifest run,
         CancellationToken cancellationToken = default);
@@ -18,6 +22,19 @@ public interface ICodeGraphStore
     ValueTask<CodeIndexRunManifest?> GetIndexRunAsync(
         CodeRepositoryId repositoryId,
         CodeIndexRunId runId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically completes a running index and publishes its incremental source state.
+    /// Failed or cancelled runs must not replace the last successful state.
+    /// </summary>
+    ValueTask CompleteIndexRunAsync(
+        CodeIndexRunManifest completedRun,
+        CodeRepositoryIndexState state,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<CodeRepositoryIndexState?> GetLatestIndexStateAsync(
+        CodeRepositoryId repositoryId,
         CancellationToken cancellationToken = default);
 
     ValueTask ReplaceIndexUnitAsync(

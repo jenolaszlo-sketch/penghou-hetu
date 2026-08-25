@@ -98,7 +98,7 @@ explicit error instead of being resolved by registration order.
 
 Repository discovery can now be converted into a deterministic incremental
 index plan. The planner uses provider content hashes when available and computes
-SHA-256 hashes otherwise. It compares those inputs with prior unit manifests and
+SHA-256 hashes otherwise. It compares those inputs with prior source manifests and
 classifies each selected source as new, changed, unchanged, or deleted; changing
 a plugin version invalidates that plugin's otherwise unchanged units:
 
@@ -118,6 +118,12 @@ Repository IDs remain caller-supplied and should identify the logical repository
 across checkouts and machines. A host that lacks such an identity may derive one
 from a canonical local path, but that fallback is deliberately host-local and
 must not be treated as a portable repository identity.
+
+Source manifests report changed inputs; they do not dictate extraction
+ownership. A syntax plugin may emit one index unit per file, while a semantic
+plugin may atomically own a project or solution unit. Plugin contexts therefore
+provide repeatable `CodeGraphSource` readers and only an optional provider-defined
+location hint—plugins must not assume repositories live on a local filesystem.
 
 ## Architectural boundaries
 

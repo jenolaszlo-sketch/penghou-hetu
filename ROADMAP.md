@@ -201,6 +201,17 @@ Completed incremental-planning slice:
 - explicit failure for ambiguous plugin claims and duplicate repository entries;
 - cancellation and incremental-planning regression tests.
 
+Lifecycle boundary hardening:
+
+- source-change manifests are distinct from plugin-defined atomic index units,
+  so project- and solution-aware plugins are not forced into file ownership;
+- plugin contexts expose only an optional provider location hint and repeatable
+  source handles, without requiring a physical filesystem root;
+- stores atomically publish the latest successful source/plugin/snapshot state
+  with run completion, while failed and cancelled runs retain prior state;
+- the provider conformance suite verifies successful incremental-state
+  publication and round-tripping.
+
 Implement:
 
 - stable caller-supplied repository identity with a documented local fallback;

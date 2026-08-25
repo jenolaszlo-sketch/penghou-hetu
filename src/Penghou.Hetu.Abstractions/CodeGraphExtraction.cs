@@ -5,15 +5,16 @@ public sealed record CodeGraphPluginContext
 {
     public CodeGraphPluginContext(
         CodeRepositoryId repositoryId,
-        string repositoryRoot,
+        string? repositoryLocation,
         CodeIndexRunId indexRunId,
         IReadOnlyList<CodeGraphSource> sources,
         IReadOnlyDictionary<string, string>? settings = null)
     {
         RepositoryId = repositoryId ??
             throw new ArgumentNullException(nameof(repositoryId));
-        RepositoryRoot = Path.GetFullPath(
-            ContractValue.Required(repositoryRoot, nameof(repositoryRoot)));
+        RepositoryLocation = string.IsNullOrWhiteSpace(repositoryLocation)
+            ? null
+            : repositoryLocation;
         IndexRunId = indexRunId ??
             throw new ArgumentNullException(nameof(indexRunId));
         Sources = sources?.ToArray() ??
@@ -38,7 +39,11 @@ public sealed record CodeGraphPluginContext
     }
 
     public CodeRepositoryId RepositoryId { get; }
-    public string RepositoryRoot { get; }
+    /// <summary>
+    /// Gets an optional provider-defined location hint. Plugins must use
+    /// <see cref="Sources"/> to read content and must not assume this is a local path.
+    /// </summary>
+    public string? RepositoryLocation { get; }
     public CodeIndexRunId IndexRunId { get; }
     public IReadOnlyList<CodeGraphSource> Sources { get; }
     public IReadOnlyDictionary<string, string> Settings { get; }

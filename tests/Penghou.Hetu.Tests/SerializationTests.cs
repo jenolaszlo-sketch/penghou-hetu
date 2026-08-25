@@ -86,4 +86,31 @@ public sealed class SerializationTests
             restored.Edges.Single().Evidence.Kind);
         Assert.True(restored.CompletesIndexUnit);
     }
+
+    [Fact]
+    public void RepositoryIndexState_RoundTripsAsPortableIncrementalData()
+    {
+        var state = new CodeRepositoryIndexState(
+            new CodeRepositoryId("repo:sample"),
+            new CodeIndexRunId("run:one"),
+            [
+                new CodeSourceManifest(
+                    new CodePluginId("plugin:csharp"),
+                    "1.2.3",
+                    "src/Example.cs",
+                    "sha256:example")
+            ],
+            "commit:abc123",
+            true);
+
+        var json = JsonSerializer.Serialize(state);
+        var restored = JsonSerializer.Deserialize<CodeRepositoryIndexState>(json);
+
+        Assert.NotNull(restored);
+        Assert.Equal(state.RepositoryId, restored.RepositoryId);
+        Assert.Equal(state.IndexRunId, restored.IndexRunId);
+        Assert.Equal(state.SnapshotIdentity, restored.SnapshotIdentity);
+        Assert.True(restored.IsConsistentSnapshot);
+        Assert.Equal(state.Sources.Single(), restored.Sources.Single());
+    }
 }

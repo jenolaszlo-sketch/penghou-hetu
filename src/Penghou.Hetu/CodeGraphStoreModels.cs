@@ -72,6 +72,51 @@ public sealed record CodeIndexRunManifest
     public IReadOnlyCollection<CodePluginId> Plugins { get; }
 }
 
+/// <summary>
+/// Records the source inputs of the latest successfully completed repository index.
+/// Index-unit ownership remains plugin-defined and is not inferred from these files.
+/// </summary>
+public sealed record CodeRepositoryIndexState
+{
+    public CodeRepositoryIndexState(
+        CodeRepositoryId repositoryId,
+        CodeIndexRunId indexRunId,
+        IReadOnlyList<CodeSourceManifest> sources,
+        string? snapshotIdentity = null,
+        bool isConsistentSnapshot = false)
+    {
+        RepositoryId = repositoryId ?? throw new ArgumentNullException(nameof(repositoryId));
+        IndexRunId = indexRunId ?? throw new ArgumentNullException(nameof(indexRunId));
+        ArgumentNullException.ThrowIfNull(sources);
+        if (sources.Any(source => source is null))
+            throw new ArgumentException("Index state cannot contain null sources.", nameof(sources));
+
+        Sources = sources
+            .OrderBy(source => source.PluginId.Value, StringComparer.Ordinal)
+            .ThenBy(source => source.SourcePath, StringComparer.Ordinal)
+            .ToArray();
+        if (Sources
+            .GroupBy(source => $"{source.PluginId.Value}\n{source.SourcePath}", StringComparer.Ordinal)
+            .Any(group => group.Count() > 1))
+        {
+            throw new ArgumentException(
+                "Index state cannot contain duplicate plugin and source-path pairs.",
+                nameof(sources));
+        }
+
+        SnapshotIdentity = string.IsNullOrWhiteSpace(snapshotIdentity)
+            ? null
+            : snapshotIdentity;
+        IsConsistentSnapshot = isConsistentSnapshot;
+    }
+
+    public CodeRepositoryId RepositoryId { get; }
+    public CodeIndexRunId IndexRunId { get; }
+    public IReadOnlyList<CodeSourceManifest> Sources { get; }
+    public string? SnapshotIdentity { get; }
+    public bool IsConsistentSnapshot { get; }
+}
+
 /// <summary>The complete new contribution of one atomically replaced index unit.</summary>
 public sealed record CodeIndexUnitReplacement
 {
