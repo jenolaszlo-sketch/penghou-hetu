@@ -160,6 +160,122 @@ public sealed class CodeGraphQueryService
             [CodeEdgeKinds.References, CodeEdgeKinds.Calls, CodeEdgeKinds.Implements,
              CodeEdgeKinds.Inherits, CodeEdgeKinds.DependsOn], options, cancellationToken);
 
+    /// <summary>
+    /// Resolves many qualified names in one call. Each name maps to its
+    /// candidate list (possibly empty); ambiguous names retain all candidates.
+    /// </summary>
+    public async ValueTask<IReadOnlyDictionary<string, CodeSymbolLookupResult>> ResolveSymbolsAsync(
+        CodeRepositoryId repositoryId,
+        IReadOnlyCollection<string> qualifiedNames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(qualifiedNames);
+        var results = new Dictionary<string, CodeSymbolLookupResult>(
+            StringComparer.Ordinal);
+        foreach (var name in qualifiedNames)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+            results[name] = await FindSymbolAsync(
+                repositoryId,
+                name,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Returns every declaration whose physical location is inside the
+    /// specified source file, ordered by position.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsInFileAsync(
+        CodeRepositoryId repositoryId,
+        string sourcePath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        var fileNodes = await _store.FindNodesByQualifiedNameAsync(
+            repositoryId,
+            sourcePath,
+            cancellationToken).ConfigureAwait(false);
+        var fileNode = fileNodes.FirstOrDefault(node =>
+            node.Kind == CodeNodeKinds.File);
+        if (fileNode is null)
+            return [];
+
+        var traversal = await TraverseAsync(
+            repositoryId,
+            fileNode.Id,
+            CodeGraphDirection.Outgoing,
+            [CodeEdgeKinds.Declares],
+            new(maxDepth: 1, maxNodes: 500, maxEdges: 1000),
+            cancellationToken).ConfigureAwait(false);
+
+        var symbolIds = traversal.Nodes
+            .Where(node => node.SymbolId is not null)
+            .Select(node => node.SymbolId!)
+            .Distinct()
+            .ToArray();
+
+        var declarations = new List<CodeGraphDeclaration>();
+        foreach (var symbolId in symbolIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var forSymbol = await _store.GetDeclarationsAsync(
+                repositoryId,
+                symbolId,
+                cancellationToken).ConfigureAwait(false);
+            declarations.AddRange(forSymbol.Where(declaration =>
+                string.Equals(declaration.Location.Path, sourcePath, StringComparison.Ordinal)));
+        }
+
+        return declarations
+            .OrderBy(declaration => declaration.Location.StartLine)
+            .ThenBy(declaration => declaration.Location.StartColumn)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Returns all nodes with public accessibility that are transitively
+    /// contained in the specified project, bounded by the query options.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<CodeGraphNode>> GetPublicSurfaceAsync(
+        CodeRepositoryId repositoryId,
+        string projectPath,
+        CodeGraphQueryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(projectPath);
+        var projectNodes = await _store.FindNodesByQualifiedNameAsync(
+            repositoryId,
+            projectPath,
+            cancellationToken).ConfigureAwait(false);
+        var projectNode = projectNodes.FirstOrDefault(node =>
+            node.Kind == CodeNodeKinds.Project);
+        if (projectNode is null)
+            return [];
+
+        options ??= new(maxDepth: 10, maxNodes: 2000, maxEdges: 5000);
+        var traversal = await TraverseAsync(
+            repositoryId,
+            projectNode.Id,
+            CodeGraphDirection.Outgoing,
+            [CodeEdgeKinds.Contains],
+            options,
+            cancellationToken).ConfigureAwait(false);
+
+        return traversal.Nodes
+            .Where(node =>
+                node.Kind != CodeNodeKinds.Project &&
+                node.Kind != CodeNodeKinds.File)
+            .Where(node => node.Properties.TryGetValue("access", out var access) &&
+                           access is CodeTextProperty text && text.Value == "public")
+            .OrderBy(node => node.QualifiedName ?? node.Name, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private ValueTask<CodeGraphTraversalResult> TraverseAsync(
         CodeRepositoryId repositoryId,
         CodeNodeId nodeId,
