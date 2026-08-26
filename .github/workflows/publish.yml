@@ -1,0 +1,64 @@
+name: Publish to NuGet
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack
+        shell: bash
+        run: |
+          args=()
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            args+=(--property:PackageVersion="${GITHUB_REF_NAME#v}")
+          fi
+          for csproj in \
+            src/Penghou.Hetu.Abstractions/Penghou.Hetu.Abstractions.csproj \
+            src/Penghou.Hetu/Penghou.Hetu.csproj \
+            src/Penghou.Hetu.CSharp/Penghou.Hetu.CSharp.csproj \
+            src/Penghou.Hetu.Ladybug/Penghou.Hetu.Ladybug.csproj \
+            src/Penghou.Hetu.Testing/Penghou.Hetu.Testing.csproj; do
+            dotnet pack "$csproj" \
+              --configuration Release \
+              --output ./artifacts \
+              "${args[@]}"
+          done
+
+      - name: NuGet login (OIDC -> temp API key)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push packages to NuGet
+        run: >
+          dotnet nuget push ./artifacts/*.nupkg
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
+
+      - name: Push symbols to NuGet
+        run: >
+          dotnet nuget push ./artifacts/*.snupkg
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
