@@ -11,6 +11,7 @@ public sealed class LadybugCodeGraphStoreTests
     {
         Assert.Equal(
             [
+                typeof(HetuHostBuilderExtensions),
                 typeof(LadybugCodeGraphSchemaException),
                 typeof(LadybugCodeGraphStore),
                 typeof(LadybugCodeGraphStoreHealth)

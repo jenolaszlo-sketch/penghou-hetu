@@ -103,7 +103,9 @@ public sealed class CSharpCodeGraphPluginTests
     {
         var exported = typeof(CSharpCodeGraphPlugin).Assembly.GetExportedTypes();
 
-        Assert.Equal([typeof(CSharpCodeGraphPlugin)], exported);
+        Assert.Equal(
+            [typeof(HetuHostBuilderExtensions), typeof(CSharpCodeGraphPlugin)],
+            exported.OfType<Type>().OrderBy(type => type.FullName).ToArray());
         Assert.DoesNotContain(
             exported.SelectMany(type => type.GetMembers()),
             member => member.ToString()?.Contains("Microsoft.CodeAnalysis", StringComparison.Ordinal) == true);

@@ -58,6 +58,8 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeSymbolLookupResult",
             "Penghou.Hetu.FileSystemCodeRepositoryProvider",
             "Penghou.Hetu.HetuBuilder",
+            "Penghou.Hetu.HetuHost",
+            "Penghou.Hetu.HetuHostBuilder",
             "Penghou.Hetu.ICodeGraphIndexStore",
             "Penghou.Hetu.ICodeGraphReader",
             "Penghou.Hetu.ICodeGraphStore",
