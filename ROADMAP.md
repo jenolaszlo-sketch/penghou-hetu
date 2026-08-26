@@ -122,18 +122,22 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 ### Tier A — ride along with Milestone 7.5
 
 - **Documentation-comment extraction (S)** — attach `<summary>`/`remarks`
-  text to symbol nodes as syntax-evidence properties; declaration plus its
-  documented intent in one node.
+  text to symbol nodes as bounded syntax-evidence properties; declaration plus
+  its documented intent in one node. Normalize deterministically and cap both
+  per-symbol text and total extracted documentation.
 - **Modifier/attribute properties (S)** — `static/virtual/abstract/sealed`,
-  access level, `[Obsolete]`, test-framework and route attributes; unlocks
-  public-surface, obsolete-member, and test-filtering queries.
+  access level, and an explicit allowlist such as `[Obsolete]`, test-framework,
+  and route attributes; unlocks public-surface, obsolete-member, and
+  test-filtering queries without turning arbitrary attribute payloads into an
+  unbounded property channel.
 - **Literal values for enums/constants (S)** — lets consumers answer
   configuration questions without reading source.
-- **Package-reference nodes (M)** — `PackageReference` items become external
-  dependency nodes with version properties; completes the dependency picture
-  beyond project references.
-- **Solution-file scoping (M)** — parse `.sln` for canonical project sets and
-  intended build order instead of directory-walk inference.
+- **Package-reference nodes (M)** — `PackageReference` items become bounded
+  syntax-evidence external dependency nodes with version and unexpanded
+  condition metadata; do not claim evaluated MSBuild semantics.
+- **Solution-file scoping (M)** — parse `.sln` for canonical project sets,
+  configurations, and explicit solution dependencies instead of directory-walk
+  inference. Project-reference edges remain the primary build-order evidence.
 
 ### Tier B — query surface
 
@@ -146,9 +150,10 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier C — strategic
 
-- **Publication snapshot export/import (M)** — store-agnostic serialized
-  publication enabling index-in-CI, query-locally workflows; makes Ladybug
-  optional for read-only consumers.
+- **Publication snapshot export/import (M)** — store-agnostic, bounded,
+  schema-versioned serialized publications with integrity hashes and explicit
+  compatibility rules; enables index-in-CI, query-locally workflows and makes
+  Ladybug optional for read-only consumers.
 - **Test-to-production mapping (M)** — detect test projects and emit exercised
   -by relationships once semantic calls land, so impact sets include the tests
   to run.
@@ -199,7 +204,7 @@ Start with the smallest vertical slice:
 
 ```text
 published repository graph
-        -> begin workspace pinned to one publication
+        -> begin workspace pinned to one publication and validated source view
         -> replace one existing C# source in memory
         -> refresh the affected project graph
         -> run bounded provenance-aware queries
@@ -213,6 +218,12 @@ plugins consume the resulting `ICodeRepositorySource` view without learning
 whether content came from disk, a VFS, or a workspace edit. Do not create
 temporary project files or introduce filesystem assumptions.
 
+Pinning a graph publication is insufficient when its repository provider is a
+live filesystem. Beginning and refreshing a workspace must also validate the
+base source manifests and hashes, or open a provider-defined immutable source
+snapshot. A mismatch fails explicitly rather than combining facts from one
+publication with later source bytes.
+
 If the first slice proves useful, extend it in the staged order documented in
 [docs/workspaces-design.md](docs/workspaces-design.md), which also holds the
 revision record, graph-diff semantics, and the workspace/source-persistence
@@ -222,6 +233,11 @@ graph mutations; CodeGraphDiff is a first-class derived result between
 publications or revisions; source blobs stay out of `ICodeGraphStore` behind a
 future `ICodeWorkspaceStore` whose recovered workloads revalidate their pinned
 base publication.
+
+`BasePublicationId` refers to Hetu's existing successfully published
+`CodeIndexRunId`; it does not introduce a parallel repository-publication
+identity. A workspace revision uses its own typed `WorkspaceRevisionId`, which
+also identifies the atomically refreshed working graph for that revision.
 
 The working graph must remain separate from the repository's last successful
 published graph. Refresh should atomically publish a workspace revision or

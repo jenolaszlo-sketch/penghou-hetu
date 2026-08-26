@@ -12,10 +12,10 @@ experiment useful.
 3. Named checkpoints and rollback by moving the head, never by reversing graph
    mutations.
 4. Branches from one base revision so Solo can compare candidate edits.
-5. Persist and recover workspace source changes through a dedicated bounded
-   workspace/blob store.
-6. First-class semantic graph diffs between publications or workspace
+5. First-class semantic graph diffs between publications or workspace
    revisions.
+6. Persist and recover workspace source changes through a dedicated bounded
+   workspace/blob store only after in-memory diff proves the feature's value.
 7. Optional incremental plugin sessions only if profiling shows rebuilding
    affected project compilations is a material bottleneck.
 
@@ -24,11 +24,11 @@ experiment useful.
 A workspace revision retains at least:
 
 - WorkspaceId
-- BasePublicationId
+- BasePublicationId (the existing successfully published CodeIndexRunId)
 - ParentRevisionId
 - RevisionId
 - SourceChanges with base/content hashes
-- WorkspaceGraphPublicationId
+- WorkspaceRevisionId (also identifies that revision's working graph)
 - Diagnostics and relationship-coverage metadata
 
 ## Graph diffs
@@ -46,3 +46,11 @@ blob methods; introduce ICodeWorkspaceStore only after revision, retention,
 privacy, encryption, size-budget, and cleanup semantics are designed. A
 recovered workspace must validate its pinned base publication and source
 hashes before refresh.
+
+## Base source integrity
+
+A graph publication does not by itself preserve the source bytes that produced
+it. Beginning and refreshing a workspace must validate the base publication's
+source manifests and hashes, or use a provider-defined immutable source
+snapshot. Live source drift is an explicit conflict; a workspace never combines
+an older published graph with newer unvalidated repository content.

@@ -1,7 +1,7 @@
 # Architecture & quality review - findings
 
 Reviewed: 2026-08, current `main` (0.1.0-preview line).
-**Ledger updated after remediation re-check:** 10 of the original 20 findings
+**Ledger updated after remediation re-check:** 13 of the original 20 findings
 are fixed; the remainder are itemized below. Resolved work is summarized once
 and no longer tracked.
 
@@ -24,7 +24,7 @@ Scope: all five src packages (`Penghou.Hetu`, `Abstractions`, `CSharp`,
 5. **O(N^2) Ladybug replay** - happy-path writes no longer rebuild the
    in-memory store; full replay remains only on the rollback path.
 6. **Per-query re-materialization** - materialized graphs cache per repository
-   and invalidate on stage/complete.
+   and invalidate on successful publication or durable restore.
 7. **O(E*N) traversal** - outgoing/incoming adjacency indexes build during
    materialization.
 8. **Redundant source-content copies** - right-sized capacity, buffer/length
@@ -34,6 +34,13 @@ Scope: all five src packages (`Penghou.Hetu`, `Abstractions`, `CSharp`,
    removed.
 10. **README HetuBuilder drift** - HetuBuilder exists (plugin/repository
     builders) and matches both quick-starts.
+11. **Host-runtime reference limitation** - the README and ROADMAP decisions
+    explicitly document that lightweight C# analysis uses
+    TRUSTED_PLATFORM_ASSEMBLIES and may differ from a project's target BCL.
+12. **Single-TFM decision** - .NET 10-only preview support is explicit in the
+    README and decisions record, with concrete revisit conditions.
+13. **Package validation** - packable projects enable NuGet package validation
+    through Directory.Build.targets.
 
 Also landed since the review: store contract split into ICodeGraphIndexStore
 (staging/publish) and ICodeGraphReader (queries); provenance envelopes on
@@ -45,10 +52,11 @@ public-API surface tests.
 ### A. Maintainability / OOP
 
 1. **Package identity blur in namespaces** - CSharpCodeGraphPlugin,
-   CSharpProjectDiscovery, and all Ladybug types still live in core's
-   namespace Penghou.Hetu instead of Penghou.Hetu.CSharp /
-   Penghou.Hetu.Ladybug. Consumers cannot tell which using directives pull
-   Roslyn or LadybugDB transitive dependencies into scope.
+   CSharpProjectDiscovery, and all Ladybug types still use the common
+   Penghou.Hetu namespace. Namespaces do not control package dependencies, so
+   this is solely a discoverability and API-navigation decision. Decide before
+   stable release whether package-specific namespaces improve clarity enough
+   to justify the additional imports and breaking rename.
 2. **Composite string keys as convention** - plugin/path keys joined with a
    newline separator remain twice in CodeIndexingLifecycle; they rely on an
    implicit no-newline-in-paths invariant. Prefer one shared readonly record
@@ -59,30 +67,20 @@ public-API surface tests.
 
 ### B. Usefulness / semantics documentation
 
-4. **C# semantic resolution uses host runtime assemblies** -
-   CreatePlatformReferences reads TRUSTED_PLATFORM_ASSEMBLIES, so analyzing
-   non-host target frameworks resolves against the wrong BCL, skewing
-   diagnostics and unresolved-relationship counts. Document the limitation or
-   adopt per-TFM reference assemblies.
-5. **Query service convenience surface** - no symbol search by name pattern,
+4. **Query service convenience surface** - no symbol search by name pattern,
    no declarations-in-file, no batch multi-symbol lookup. Provenance envelopes
    landed; these consumer conveniences did not.
-6. **GetImpactSetAsync is incoming-only** - reasonable definition, but document
+5. **GetImpactSetAsync is incoming-only** - reasonable definition, but document
    the decision or add an option including outgoing edges.
 
 ### C. Release engineering / project hygiene
 
-7. **Single-TFM net10.0** - sibling packages target net8.0-net10.0; LTS
-   consumers cannot take Hetu. State the decision in the README or add
-   targets.
-8. **CI coverage gaps** - format gate and OS matrix landed, but there is no
+6. **CI coverage gaps** - format gate and OS matrix landed, but there is no
    coverage collection/threshold reporting and no .editorconfig. PublicApi
    snapshots exist for Abstractions and the runtime; CSharp/Ladybug/Testing
    have none.
-9. **Benchmarks not CI-integrated** - harness is documented and reproducible;
+7. **Benchmarks not CI-integrated** - harness is documented and reproducible;
    consider a scheduled or manual CI job so regressions surface.
-10. **Pack publishes without package validation** - enable
-    EnablePackageValidation before the first real release.
 
 ## Done well (preserve)
 
@@ -102,9 +100,10 @@ public-API surface tests.
 
 ## Suggested priority
 
-1. Small closes: namespaces (#1), converter removal (#3), impact-set decision
-   note (#6), TFM decision note (#7).
-2. Consumer value: query conveniences (#5) before Solo integration lands.
+1. Small closes: namespace decision (#1), converter review (#3), and impact-set
+   direction note (#5).
+2. Consumer value: query conveniences (#4) before Solo integration lands.
 3. Hygiene: coverage thresholds + .editorconfig + remaining API snapshots
-   (#8), package validation (#10), benchmark CI job (#9).
-4. Deeper: shared key types (#2), platform-reference strategy (#4).
+   (#6), then a scheduled/manual benchmark job (#7).
+4. Deeper: shared key types (#2). Revisit exact target-framework reference
+   resolution only when cross-target dogfooding demonstrates material errors.
