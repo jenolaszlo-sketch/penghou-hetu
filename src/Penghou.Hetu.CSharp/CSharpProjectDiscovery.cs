@@ -160,9 +160,11 @@ internal static partial class CSharpProjectDiscovery
     private static string Combine(string directory, string value)
     {
         var segments = new List<string>();
-        foreach (var segment in $"{directory}/{value}".Split(
-                     '/',
-                     StringSplitOptions.RemoveEmptyEntries))
+        foreach (var segment in $"{directory}/{value}"
+                     .Replace('\\', '/')
+                     .Split(
+                         '/',
+                         StringSplitOptions.RemoveEmptyEntries))
         {
             if (segment == ".")
                 continue;

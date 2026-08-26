@@ -374,6 +374,208 @@ public sealed class CSharpCodeGraphPluginTests
             unit => unit.Value == CSharpProjectUnitId("Removed/Removed.csproj"));
     }
 
+    [Fact]
+    public async Task ExtractAsync_EmitsInheritanceImplementsAndCallsEdges()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Greeter.cs", """
+                using System;
+                namespace Example;
+
+                public interface IGreeter { string Greet(); }
+
+                public abstract class BaseGreeter
+                {
+                    public abstract string Core();
+                }
+
+                public class Greeter : BaseGreeter, IGreeter
+                {
+                    private readonly int _seed;
+                    public Greeter(int seed) => _seed = seed;
+                    public override string Core() => _seed.ToString();
+                    public string Greet() => $"greet:{Core()}";
+                    public static void Announce(Greeter value) => Console.WriteLine(value.Greet());
+                }
+                """));
+
+        var greeter = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.Greeter");
+        var interfaceNode = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Interface && node.QualifiedName == "Example.IGreeter");
+        var baseNode = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.BaseGreeter");
+        var greet = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.Greeter.Greet()");
+        var coreOverride = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName?.StartsWith("Example.Greeter.Core()", StringComparison.Ordinal) == true);
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Inherits &&
+            edge.SourceId == greeter.Id &&
+            edge.TargetId == baseNode.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements &&
+            edge.SourceId == greeter.Id &&
+            edge.TargetId == interfaceNode.Id);
+        // Roslyn correctly binds Greet()'s Core() call to the override on
+        // Greeter, not the abstract declaration on BaseGreeter.
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == greet.Id &&
+            edge.TargetId == coreOverride.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_EmitsReferencesImportsAndCoverage()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Hub.cs", """
+                namespace Example;
+
+                public enum Mode { Fast, Slow }
+
+                public class Hub
+                {
+                    public const int Limit = 42;
+                    public Mode Current { get; set; }
+
+                    /// <summary>Central dispatch point.</summary>
+                    [System.Obsolete("use Hub2")]
+                    public void Dispatch(Mode mode)
+                    {
+                        var kind = typeof(Mode);
+                        if (mode == Mode.Fast) { }
+                    }
+                }
+                """),
+            ("src/Consumer.cs", """
+                namespace Example;
+
+                public class Consumer
+                {
+                    public Hub Target() => new Hub();
+                }
+                """));
+
+        var hub = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.Hub");
+        var dispatch = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.Hub.Dispatch(Example.Mode)");
+        var limit = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Field && node.Name == "Limit");
+
+        // Tier-A ride-alongs: doc summary and attributes on the method that
+        // carries them; constant literal on the field.
+        Assert.IsType<CodeTextProperty>(dispatch.Properties["doc-summary"]);
+        Assert.Contains(
+            "Central dispatch",
+            ((CodeTextProperty)dispatch.Properties["doc-summary"]).Value);
+        Assert.True(
+            dispatch.Properties.ContainsKey("obsolete"),
+            $"obsolete not found; keys=[{string.Join(",", dispatch.Properties.Keys)}]");
+        Assert.True(limit.Properties.TryGetValue("constant-value", out var literal));
+        Assert.Equal(42, ((CodeIntegerProperty)literal).Value);
+
+        // References: typeof + constant usage from the same callable.
+        Assert.Contains(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.References &&
+                edge.SourceId != edge.TargetId);
+
+        var coverage = extracted.Result.RelationshipCoverage.ToArray();
+        Assert.Contains(coverage, value =>
+            value.RelationshipKind == CodeEdgeKinds.Returns.Value &&
+            value.State == CodeRelationshipCoverageState.NotProduced);
+        Assert.Contains(coverage, value =>
+            value.RelationshipKind == CodeEdgeKinds.Accepts.Value &&
+            value.State == CodeRelationshipCoverageState.NotProduced);
+        Assert.Contains(coverage, value =>
+            value.RelationshipKind == CodeEdgeKinds.Imports.Value);
+        Assert.All(coverage, value =>
+            Assert.True(CodeRelationshipCoverageState.IsDefined(value.State)));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_UnresolvedCallTargetsAreCountedNotGuessed()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Broken.cs", """
+                namespace Example;
+
+                public class Caller
+                {
+                    public void Run()
+                    {
+                        MissingLibrary.DoWork();
+                    }
+                }
+                """));
+
+        var coverage = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Partial, coverage.State);
+        Assert.True(coverage.UnresolvedTargets > 0);
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                extracted.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName!
+                    .Contains("MissingLibrary", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_CrossProjectCallsResolveToDependencySymbols()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Lib/Lib.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib/Utility.cs", """
+                namespace Lib;
+                public static class Utility
+                {
+                    public static int Add(int a, int b) => a + b;
+                }
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                using Lib;
+                public class Program
+                {
+                    public int Sum() => Utility.Add(1, 2);
+                }
+                """));
+
+        var add = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName!.Contains("Utility.Add(", StringComparison.Ordinal));
+        var sum = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "App.Program.Sum()");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == sum.Id &&
+            edge.TargetId == add.Id);
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {

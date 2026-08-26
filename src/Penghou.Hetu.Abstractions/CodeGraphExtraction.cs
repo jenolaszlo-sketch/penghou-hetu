@@ -117,6 +117,64 @@ public sealed record CodeGraphSourceChange
     public string? CurrentHash { get; }
 }
 
+/// <summary>States allowed on <see cref="CodeRelationshipCoverage"/>.</summary>
+public static class CodeRelationshipCoverageState
+{
+    public const string Produced = "produced";
+    public const string Partial = "partial";
+    public const string NotProduced = "not-produced";
+
+    public static bool IsDefined(string state) =>
+        state is Produced or Partial or NotProduced;
+}
+
+/// <summary>
+/// Reports whether one relationship kind was actually indexed, so consumers can
+/// distinguish "no such relationship exists" from "this extraction did not
+/// produce that kind" and from "produced but some targets did not resolve".
+/// </summary>
+/// <param name="RelationshipKind">The normalized edge kind being reported.</param>
+/// <param name="State">Produced, partial, or not-produced.</param>
+/// <param name="EdgesEmitted">Edges successfully created for this kind.</param>
+/// <param name="UnresolvedTargets">
+/// Emission attempts whose target existed but could not be uniquely matched to
+/// a graph node. Externally-owned targets (for example base library symbols)
+/// are neither emitted nor counted here.
+/// </param>
+public sealed record CodeRelationshipCoverage
+{
+    public CodeRelationshipCoverage(
+        string relationshipKind,
+        string state,
+        int edgesEmitted,
+        int unresolvedTargets)
+    {
+        RelationshipKind = ContractValue.Identifier(
+            relationshipKind,
+            nameof(relationshipKind));
+        if (!CodeRelationshipCoverageState.IsDefined(state))
+            throw new ArgumentException("Unknown relationship coverage state.", nameof(state));
+        if (edgesEmitted < 0 || unresolvedTargets < 0)
+            throw new ArgumentOutOfRangeException(nameof(edgesEmitted));
+        if (state == CodeRelationshipCoverageState.NotProduced &&
+            (edgesEmitted != 0 || unresolvedTargets != 0))
+        {
+            throw new ArgumentException(
+                "A not-produced relationship kind cannot report edges or unresolved targets.",
+                nameof(state));
+        }
+
+        State = state;
+        EdgesEmitted = edgesEmitted;
+        UnresolvedTargets = unresolvedTargets;
+    }
+
+    public string RelationshipKind { get; }
+    public string State { get; }
+    public int EdgesEmitted { get; }
+    public int UnresolvedTargets { get; }
+}
+
 /// <summary>Reports cleanup work and bounded privacy-safe extraction diagnostics.</summary>
 public sealed record CodeGraphExtractionResult
 {
@@ -125,7 +183,8 @@ public sealed record CodeGraphExtractionResult
         int sourcesExamined = 0,
         int sourcesContributingFacts = 0,
         int unresolvedRelationships = 0,
-        IReadOnlyCollection<string>? warningCodes = null)
+        IReadOnlyCollection<string>? warningCodes = null,
+        IReadOnlyCollection<CodeRelationshipCoverage>? relationshipCoverage = null)
     {
         if (obsoleteIndexUnits?.Any(id => id is null) == true)
             throw new ArgumentException("Obsolete units cannot contain null identities.", nameof(obsoleteIndexUnits));
@@ -156,6 +215,17 @@ public sealed record CodeGraphExtractionResult
         SourcesContributingFacts = sourcesContributingFacts;
         UnresolvedRelationships = unresolvedRelationships;
         WarningCodes = warnings;
+        RelationshipCoverage = relationshipCoverage?
+            .Select(value => value ?? throw new ArgumentException(
+                "Relationship coverage cannot contain null entries.",
+                nameof(relationshipCoverage)))
+            .GroupBy(value => value.RelationshipKind, StringComparer.Ordinal)
+            .Select(group => group.Single())
+            .Order(Comparer<CodeRelationshipCoverage>.Create(
+                (left, right) => string.CompareOrdinal(
+                    left.RelationshipKind,
+                    right.RelationshipKind)))
+            .ToArray() ?? [];
     }
 
     public IReadOnlyCollection<CodeIndexUnitId> ObsoleteIndexUnits { get; }
@@ -163,6 +233,12 @@ public sealed record CodeGraphExtractionResult
     public int SourcesContributingFacts { get; }
     public int UnresolvedRelationships { get; }
     public IReadOnlyCollection<string> WarningCodes { get; }
+
+    /// <summary>
+    /// Per-kind relationship coverage. Every kind the plugin is specified to
+    /// produce appears exactly once, including kinds deliberately not produced.
+    /// </summary>
+    public IReadOnlyCollection<CodeRelationshipCoverage> RelationshipCoverage { get; }
 }
 
 /// <summary>Discovers normalized graph facts for one language.</summary>
