@@ -139,12 +139,245 @@ public sealed class CodeGraphQueryServiceTests
         Assert.Equal("src/A.cs", declarations[0].Location.Path);
     }
 
+    [Fact]
+    public async Task PublicSurface_CrossesFileDeclarationBoundaryWithProvenance()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:surface");
+        var runId = new CodeIndexRunId("run:surface");
+        var pluginId = new CodePluginId("plugin:surface");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        var project = new CodeGraphNode(
+            new("node:project"), CodeNodeKinds.Project, "Sample", "src/Sample.csproj");
+        var file = new CodeGraphNode(
+            new("node:file"), CodeNodeKinds.File, "Service.cs", "src/Service.cs");
+        var visible = SurfaceNode("visible", "Sample.VisibleService", "public");
+        var hidden = SurfaceNode("hidden", "Sample.HiddenService", "internal");
+        await store.StageIndexUnitAsync(new(
+            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:surface")),
+            [project, file, visible, hidden],
+            edges:
+            [
+                Relationship("contains", project.Id, file.Id, CodeEdgeKinds.Contains),
+                Relationship("visible", file.Id, visible.Id, CodeEdgeKinds.Declares),
+                Relationship("hidden", file.Id, hidden.Id, CodeEdgeKinds.Declares)
+            ]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+        var queries = new CodeGraphQueryService(store);
+
+        var surface = await queries.GetPublicSurfaceAsync(
+            repositoryId,
+            "src/Sample.csproj");
+        var attributed = await queries.GetPublicSurfaceWithProvenanceAsync(
+            repositoryId,
+            "src/Sample.csproj");
+
+        Assert.Equal([visible.Id], surface.Select(node => node.Id));
+        Assert.NotNull(attributed);
+        Assert.Equal([visible.Id], attributed.Result.Select(node => node.Id));
+        var provenance = Assert.Single(attributed.Provenance);
+        Assert.Equal(visible.Id.Value, provenance.FactId);
+        Assert.Equal(runId, attributed.Publication.IndexRunId);
+    }
+
+    [Fact]
+    public async Task PublicationQuery_RejectsLaterPublication()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:bound");
+        var pluginId = new CodePluginId("plugin:bound");
+        var firstRun = new CodeIndexRunId("run:first");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, firstRun, started, plugins: [pluginId]));
+        await store.StageIndexUnitAsync(new(
+            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", firstRun, new("unit:bound")),
+            [Node("bound", "Example.Bound")]));
+        await CompleteAsync(store, repositoryId, firstRun, pluginId, started);
+        var queries = new CodeGraphQueryService(store);
+        var bound = await queries.OpenLatestPublicationAsync(repositoryId);
+        Assert.NotNull(bound);
+        var impact = await bound.GetImpactSetAsync(new("node:bound"));
+        Assert.Equal(firstRun, impact.Publication.IndexRunId);
+        Assert.Equal([new CodeNodeId("node:bound")],
+            impact.Result.Nodes.Select(node => node.Id));
+
+        var secondRun = new CodeIndexRunId("run:second");
+        await store.StoreIndexRunAsync(new(
+            repositoryId,
+            secondRun,
+            started.AddMinutes(1),
+            plugins: [pluginId]));
+        await CompleteAsync(
+            store,
+            repositoryId,
+            secondRun,
+            pluginId,
+            started.AddMinutes(1));
+
+        var exception = await Assert.ThrowsAsync<
+            CodeGraphPublicationChangedException>(async () =>
+            await bound!.FindSymbolAsync("Example.Bound"));
+
+        Assert.Equal(firstRun, exception.Expected.IndexRunId);
+        Assert.Equal(secondRun, exception.Actual!.IndexRunId);
+    }
+
+    [Fact]
+    public async Task BatchQueries_AreBoundedAndShareOnePublication()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:multi");
+        var runId = new CodeIndexRunId("run:multi");
+        var pluginId = new CodePluginId("plugin:multi");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        var target = Node("target-multi", "Example.Target");
+        var first = Node("first-multi", "Example.First");
+        var second = Node("second-multi", "Example.Second");
+        await store.StageIndexUnitAsync(new(
+            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:multi")),
+            [target, first, second],
+            edges:
+            [
+                Relationship("call-first", first.Id, target.Id, CodeEdgeKinds.Calls),
+                Relationship("call-second", second.Id, target.Id, CodeEdgeKinds.Calls)
+            ]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+        var queries = new CodeGraphQueryService(store);
+
+        var symbols = await queries.ResolveSymbolsWithProvenanceAsync(
+            repositoryId,
+            ["Example.Second", "Example.First", "Example.First"]);
+        var impacts = await queries.GetImpactSetsWithProvenanceAsync(
+            repositoryId,
+            [target.Id, first.Id],
+            new CodeGraphQueryOptions(maxDepth: 1));
+
+        Assert.NotNull(symbols);
+        Assert.Equal(
+            ["Example.First", "Example.Second"],
+            symbols.Result.Keys);
+        Assert.Equal(runId, symbols.Publication.IndexRunId);
+        Assert.NotNull(impacts);
+        Assert.Equal([first.Id, second.Id, target.Id],
+            impacts.Result.Results[target.Id.Value].Nodes
+                .Select(node => node.Id)
+                .OrderBy(id => id.Value, StringComparer.Ordinal));
+        Assert.Equal(2, impacts.Result.Results.Count);
+    }
+
+    [Fact]
+    public async Task EmptyBatch_StillIdentifiesPublication()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:empty-batch");
+        var runId = new CodeIndexRunId("run:empty-batch");
+        var pluginId = new CodePluginId("plugin:empty-batch");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+
+        var result = await new CodeGraphQueryService(store)
+            .ResolveSymbolsWithProvenanceAsync(repositoryId, []);
+
+        Assert.NotNull(result);
+        Assert.Equal(runId, result.Publication.IndexRunId);
+        Assert.Empty(result.Result);
+    }
+
+    [Fact]
+    public async Task BatchQueries_RejectRequestsBeyondTheirDeclaredLimits()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var queries = new CodeGraphQueryService(store);
+        var repositoryId = new CodeRepositoryId("repo:limits");
+
+        var symbolException = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await queries.ResolveSymbolsAsync(
+                repositoryId,
+                Enumerable.Range(0, 101).Select(index => $"Example.Symbol{index}").ToArray()));
+        var impactException = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await queries.GetImpactSetsAsync(
+                repositoryId,
+                Enumerable.Range(0, 33).Select(index => new CodeNodeId($"node:{index}")).ToArray()));
+
+        Assert.Equal("qualifiedNames", symbolException.ParamName);
+        Assert.Equal("seedNodeIds", impactException.ParamName);
+    }
+
+    [Fact]
+    public async Task DeclarationsInFileWithProvenance_ReturnsOnlySelectedDeclarations()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:file-provenance");
+        var runId = new CodeIndexRunId("run:file-provenance");
+        var pluginId = new CodePluginId("plugin:file-provenance");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        var file = new CodeGraphNode(
+            new("node:file-provenance"), CodeNodeKinds.File, "A.cs", "src/A.cs");
+        var symbol = Node("file-symbol", "Example.FileSymbol");
+        var selected = new CodeGraphDeclaration(
+            new("decl:selected"), symbol.SymbolId!, symbol.Id,
+            new("src/A.cs", 1, 1, 1, 10));
+        var other = new CodeGraphDeclaration(
+            new("decl:other"), symbol.SymbolId!, symbol.Id,
+            new("src/B.cs", 1, 1, 1, 10));
+        await store.StageIndexUnitAsync(new(
+            new(repositoryId, pluginId, "1.0.0", runId, new("unit:file-provenance")),
+            [file, symbol],
+            [selected, other],
+            [Relationship("file-declares", file.Id, symbol.Id, CodeEdgeKinds.Declares)]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+
+        var envelope = await new CodeGraphQueryService(store)
+            .GetDeclarationsInFileWithProvenanceAsync(repositoryId, "src/A.cs");
+
+        Assert.NotNull(envelope);
+        Assert.Equal([selected.Id], envelope.Result.Select(item => item.Id));
+        var provenance = Assert.Single(envelope.Provenance);
+        Assert.Equal(selected.Id.Value, provenance.FactId);
+    }
+
     private static CodeGraphNode Node(string id, string name) => new(
         new CodeNodeId($"node:{id}"),
         CodeNodeKinds.Callable,
         name[(name.LastIndexOf('.') + 1)..],
         name,
             new CodeSymbolId($"symbol:{id}"));
+
+    private static CodeGraphNode SurfaceNode(
+        string id,
+        string name,
+        string access) =>
+        new(
+            new CodeNodeId($"node:{id}"),
+            CodeNodeKinds.Type,
+            name[(name.LastIndexOf('.') + 1)..],
+            name,
+            new CodeSymbolId($"symbol:{id}"),
+            new Dictionary<string, CodePropertyValue>
+            {
+                ["access"] = new CodeTextProperty(access)
+            });
+
+    private static CodeGraphEdge Relationship(
+        string id,
+        CodeNodeId source,
+        CodeNodeId target,
+        CodeEdgeKind kind) =>
+        new(
+            new CodeEdgeId($"edge:{id}"),
+            source,
+            target,
+            kind,
+            new CodeEvidence(CodeEvidenceKind.Semantic, "tests"));
 
     private static ValueTask CompleteAsync(
         ICodeGraphStore store,

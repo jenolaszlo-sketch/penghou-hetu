@@ -55,6 +55,11 @@ public interface ICodeGraphIndexStore
 /// <summary>Reads the latest successfully published repository graph.</summary>
 public interface ICodeGraphReader
 {
+    /// <summary>Gets the identity of the latest successful publication.</summary>
+    ValueTask<CodeGraphPublication?> GetLatestPublicationAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default);
+
     ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
         FindNodesByQualifiedNameWithProvenanceAsync(
             CodeRepositoryId repositoryId,

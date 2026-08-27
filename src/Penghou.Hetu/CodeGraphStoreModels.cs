@@ -83,7 +83,8 @@ public sealed record CodeRepositoryIndexState
         CodeIndexRunId indexRunId,
         IReadOnlyList<CodeSourceManifest> sources,
         string? snapshotIdentity = null,
-        bool isConsistentSnapshot = false)
+        bool isConsistentSnapshot = false,
+        CodeIndexIdentity? indexIdentity = null)
     {
         RepositoryId = repositoryId ?? throw new ArgumentNullException(nameof(repositoryId));
         IndexRunId = indexRunId ?? throw new ArgumentNullException(nameof(indexRunId));
@@ -108,6 +109,19 @@ public sealed record CodeRepositoryIndexState
             ? null
             : snapshotIdentity;
         IsConsistentSnapshot = isConsistentSnapshot;
+        var expectedIndexIdentity = CodeIndexIdentity.Create(
+            repositoryId,
+            Sources,
+            SnapshotIdentity,
+            IsConsistentSnapshot);
+        if (indexIdentity is not null && indexIdentity != expectedIndexIdentity)
+        {
+            throw new ArgumentException(
+                "The supplied index identity does not match the source state.",
+                nameof(indexIdentity));
+        }
+
+        IndexIdentity = expectedIndexIdentity;
     }
 
     public CodeRepositoryId RepositoryId { get; }
@@ -115,6 +129,7 @@ public sealed record CodeRepositoryIndexState
     public IReadOnlyList<CodeSourceManifest> Sources { get; }
     public string? SnapshotIdentity { get; }
     public bool IsConsistentSnapshot { get; }
+    public CodeIndexIdentity IndexIdentity { get; }
 }
 
 /// <summary>The complete new contribution of one atomically replaced index unit.</summary>
@@ -237,11 +252,30 @@ public sealed record CodeGraphTraversalResult
 }
 
 /// <summary>Identifies the successful repository publication observed by a query.</summary>
-public sealed record CodeGraphPublication(
-    CodeRepositoryId RepositoryId,
-    CodeIndexRunId IndexRunId,
-    string? SnapshotIdentity,
-    bool IsConsistentSnapshot);
+public sealed record CodeGraphPublication
+{
+    public CodeGraphPublication(
+        CodeRepositoryId repositoryId,
+        CodeIndexRunId indexRunId,
+        string? snapshotIdentity,
+        bool isConsistentSnapshot,
+        CodeIndexIdentity indexIdentity)
+    {
+        RepositoryId = repositoryId ?? throw new ArgumentNullException(nameof(repositoryId));
+        IndexRunId = indexRunId ?? throw new ArgumentNullException(nameof(indexRunId));
+        SnapshotIdentity = string.IsNullOrWhiteSpace(snapshotIdentity)
+            ? null
+            : snapshotIdentity;
+        IsConsistentSnapshot = isConsistentSnapshot;
+        IndexIdentity = indexIdentity ?? throw new ArgumentNullException(nameof(indexIdentity));
+    }
+
+    public CodeRepositoryId RepositoryId { get; }
+    public CodeIndexRunId IndexRunId { get; }
+    public string? SnapshotIdentity { get; }
+    public bool IsConsistentSnapshot { get; }
+    public CodeIndexIdentity IndexIdentity { get; }
+}
 
 public enum CodeGraphFactKind
 {
@@ -260,7 +294,9 @@ public sealed record CodeGraphFactProvenance(
 public sealed record CodeGraphQueryDescriptor(
     string Operation,
     string? QualifiedName = null,
-    CodeGraphTraversalQuery? Traversal = null);
+    CodeGraphTraversalQuery? Traversal = null,
+    IReadOnlyList<string>? QualifiedNames = null,
+    IReadOnlyList<CodeGraphTraversalQuery>? Traversals = null);
 
 /// <summary>Binds a query result and its contributors to one atomic publication.</summary>
 public sealed record CodeGraphQueryEnvelope<TResult>(
@@ -268,6 +304,13 @@ public sealed record CodeGraphQueryEnvelope<TResult>(
     CodeGraphQueryDescriptor Query,
     TResult Result,
     IReadOnlyList<CodeGraphFactProvenance> Provenance);
+
+/// <summary>Results of independently bounded traversals keyed by seed node identity.</summary>
+public sealed record CodeGraphMultiTraversalResult(
+    IReadOnlyDictionary<string, CodeGraphTraversalResult> Results)
+{
+    public bool Truncated => Results.Values.Any(result => result.Truncated);
+}
 
 /// <summary>Privacy-safe counters from one completed index-unit ingestion.</summary>
 public sealed record CodeGraphIngestionDiagnostics(

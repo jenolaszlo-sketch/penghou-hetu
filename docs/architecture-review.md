@@ -67,9 +67,11 @@ public-API surface tests.
 
 ### B. Usefulness / semantics documentation
 
-4. **Query service convenience surface** - no symbol search by name pattern,
-   no declarations-in-file, no batch multi-symbol lookup. Provenance envelopes
-   landed; these consumer conveniences did not.
+4. **Query service candidate search** - declarations-in-file, project public
+   surface, bounded multi-symbol lookup, multi-seed impact queries, and
+   publication pinning have landed. Bounded name-pattern candidate search is
+   still deferred until Solo demonstrates its required filters and ranking
+   inputs.
 5. **GetImpactSetAsync is incoming-only** - reasonable definition, but document
    the decision or add an option including outgoing edges.
 
@@ -102,7 +104,8 @@ public-API surface tests.
 
 1. Small closes: namespace decision (#1), converter review (#3), and impact-set
    direction note (#5).
-2. Consumer value: query conveniences (#4) before Solo integration lands.
+2. Consumer value: validate the remaining candidate-search need (#4) during
+   Solo integration rather than designing fuzzy selection speculatively.
 3. Hygiene: coverage thresholds + .editorconfig + remaining API snapshots
    (#6), then a scheduled/manual benchmark job (#7).
 4. Deeper: shared key types (#2). Revisit exact target-framework reference

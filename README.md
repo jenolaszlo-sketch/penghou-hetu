@@ -140,6 +140,12 @@ var result = await indexing.IndexAsync(
     new CodeIndexingOptions(maxConcurrentPlugins: 2));
 ```
 
+Every successful result includes both the exact published source state and a
+compact publication receipt. `IndexIdentity` is a deterministic SHA-256
+identity for the repository, provider snapshot, plugin versions, source paths,
+and source hashes; unlike `IndexRunId`, it stays the same when an unchanged
+repository is indexed again under a new run ID.
+
 Plugins see the complete current source set plus exact source transitions. They
 remain responsible for choosing atomic index units and report obsolete unit IDs
 after extraction. Hetu refuses to complete a run if any streamed unit remains
@@ -229,6 +235,37 @@ the result to one successful publication and the exact applied query. Returned
 nodes, declarations, and edges include every contributing plugin version and
 index-unit origin. Traversal results also report the truncation reason, depth
 reached, examined counts, and omitted frontier count.
+
+For context assembled through several calls, bind the query service to one
+publication. The bound view rejects a result if another successful index is
+published between calls; it does not imply that the store retains historical
+graphs:
+
+```csharp
+var view = await host.Queries.OpenLatestPublicationAsync(repositoryId);
+if (view is not null)
+{
+    var symbols = await view.ResolveSymbolsAsync(
+        ["Example.Order", "Example.OrderService"]);
+    var impact = await view.GetImpactSetsAsync(
+        symbols.Result["Example.OrderService"].Candidates.Select(node => node.Id).ToArray());
+}
+```
+
+Batch symbol resolution is capped at 100 distinct qualified names and batch
+impact analysis at 32 distinct seeds; each impact traversal keeps its own node,
+edge, and depth bounds. Convenience queries also expose declarations in one
+file and the public symbol surface reachable from a project through containment
+and declaration edges. These operations compare exact names and paths and never
+silently choose among ambiguous symbols.
+
+`HetuHostBuilder.WithIndexingOptions(...)` establishes host defaults that each
+indexing call may override. `UseStore(store)` transfers ownership of a supplied
+store instance to the resulting host. `HetuHost.CheckHealthAsync()` provides a
+content-free readiness result covering the graph store and the deterministically
+ordered plugin/provider composition. Stores that do not implement the optional
+`ICodeGraphStoreHealthCheck` contract report `Unknown`, not a guessed healthy
+state.
 
 ## Ladybug persistence
 

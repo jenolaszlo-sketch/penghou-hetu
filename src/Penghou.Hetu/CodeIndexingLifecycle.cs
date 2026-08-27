@@ -83,8 +83,12 @@ public sealed record CodePluginIndexingDiagnostics(
     int ObsoleteIndexUnits,
     IReadOnlyList<string> WarningCodes);
 
-/// <summary>Result of one completed repository indexing lifecycle.</summary>
-public sealed record CodeIndexingResult(CodeIndexPlan Plan, CodeIndexingDiagnostics Diagnostics);
+/// <summary>Result and exact publication receipt of one completed indexing lifecycle.</summary>
+public sealed record CodeIndexingResult(
+    CodeIndexPlan Plan,
+    CodeIndexingDiagnostics Diagnostics,
+    CodeGraphPublication Publication,
+    CodeRepositoryIndexState PublishedState);
 
 /// <summary>Coordinates repository discovery, plugins, ingestion, and durable run state.</summary>
 public sealed class CodeIndexingService
@@ -267,7 +271,16 @@ public sealed class CodeIndexingService
                 planningDuration, extractionDuration, persistenceDuration,
                 pluginDiagnostics);
             Report(diagnostics, final);
-            return new(plan, final);
+            return new(
+                plan,
+                final,
+                new CodeGraphPublication(
+                    state.RepositoryId,
+                    state.IndexRunId,
+                    state.SnapshotIdentity,
+                    state.IsConsistentSnapshot,
+                    state.IndexIdentity),
+                state);
         }
         catch (Exception exception)
         {

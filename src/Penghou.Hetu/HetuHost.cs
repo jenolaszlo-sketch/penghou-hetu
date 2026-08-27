@@ -23,6 +23,13 @@ public sealed class HetuHostBuilder
         return this;
     }
 
+    /// <summary>Uses one supplied graph store instance whose ownership transfers to the host.</summary>
+    public HetuHostBuilder UseStore(ICodeGraphStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return UseStore(() => store);
+    }
+
     /// <summary>Adds a language plugin.</summary>
     public HetuHostBuilder AddPlugin(ICodeGraphPlugin plugin)
     {
@@ -72,6 +79,9 @@ public sealed class HetuHostBuilder
 public sealed class HetuHost : IAsyncDisposable
 {
     private readonly ICodeGraphStore _store;
+    private readonly CodeIndexingOptions? _indexingOptions;
+    private readonly IReadOnlyList<CodePluginId> _pluginIds;
+    private readonly IReadOnlyList<string> _repositoryProviderNames;
 
     internal HetuHost(
         CodeRepositoryProviderRegistry repositories,
@@ -80,6 +90,15 @@ public sealed class HetuHost : IAsyncDisposable
         CodeIndexingOptions? indexingOptions)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _indexingOptions = indexingOptions;
+        _pluginIds = plugins.Plugins
+            .Select(plugin => plugin.Id)
+            .OrderBy(id => id.Value, StringComparer.Ordinal)
+            .ToArray();
+        _repositoryProviderNames = repositories.Providers
+            .Select(provider => provider.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
         Indexing = new CodeIndexingService(repositories, plugins, store);
         Queries = new CodeGraphQueryService(store);
     }
@@ -100,7 +119,29 @@ public sealed class HetuHost : IAsyncDisposable
         CodeIndexingOptions? options = null,
         Action<CodeIndexingDiagnostics>? diagnostics = null,
         CancellationToken cancellationToken = default) =>
-        Indexing.IndexAsync(descriptor, runId, options, diagnostics, cancellationToken);
+        Indexing.IndexAsync(
+            descriptor,
+            runId,
+            options ?? _indexingOptions,
+            diagnostics,
+            cancellationToken);
+
+    /// <summary>Checks provider-neutral readiness without reading source content.</summary>
+    public async ValueTask<HetuHostHealth> CheckHealthAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var storeHealth = _store is ICodeGraphStoreHealthCheck healthCheck
+            ? await healthCheck.CheckHealthAsync(cancellationToken)
+                .ConfigureAwait(false)
+            : new CodeGraphStoreHealth(
+                CodeGraphStoreHealthStatus.Unknown,
+                _store.GetType().Name,
+                "The configured store does not implement ICodeGraphStoreHealthCheck.");
+        return new HetuHostHealth(
+            storeHealth,
+            _pluginIds,
+            _repositoryProviderNames);
+    }
 
     public async ValueTask DisposeAsync()
     {

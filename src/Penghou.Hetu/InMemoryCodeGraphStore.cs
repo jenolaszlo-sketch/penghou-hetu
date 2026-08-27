@@ -1,7 +1,9 @@
 namespace Penghou.Hetu;
 
 /// <summary>A thread-safe in-memory graph store with atomic index-unit replacement.</summary>
-public sealed class InMemoryCodeGraphStore : ICodeGraphStore
+public sealed class InMemoryCodeGraphStore :
+    ICodeGraphStore,
+    ICodeGraphStoreHealthCheck
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, CodeRepositoryManifest> _repositories =
@@ -163,6 +165,35 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
             return new(_indexStates.GetValueOrDefault(repositoryId.Value));
+    }
+
+    public ValueTask<CodeGraphPublication?> GetLatestPublicationAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return new(TryGetPublication(repositoryId, out var publication)
+                ? publication
+                : null);
+        }
+    }
+
+    public ValueTask<CodeGraphStoreHealth> CheckHealthAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return new(new CodeGraphStoreHealth(
+                CodeGraphStoreHealthStatus.Healthy,
+                "memory",
+                RepositoryCount: _repositories.Count,
+                RunCount: _runs.Count,
+                IndexUnitCount: _units.Count));
+        }
     }
 
     public ValueTask StageIndexUnitAsync(
@@ -514,6 +545,7 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
         first.IndexRunId == second.IndexRunId &&
         first.SnapshotIdentity == second.SnapshotIdentity &&
         first.IsConsistentSnapshot == second.IsConsistentSnapshot &&
+        first.IndexIdentity == second.IndexIdentity &&
         first.Sources.Count == second.Sources.Count &&
         first.Sources.Zip(second.Sources).All(pair =>
             pair.First.PluginId == pair.Second.PluginId &&
@@ -900,7 +932,8 @@ public sealed class InMemoryCodeGraphStore : ICodeGraphStore
                 repositoryId,
                 state.IndexRunId,
                 state.SnapshotIdentity,
-                state.IsConsistentSnapshot);
+                state.IsConsistentSnapshot,
+                state.IndexIdentity);
             return true;
         }
         publication = null!;

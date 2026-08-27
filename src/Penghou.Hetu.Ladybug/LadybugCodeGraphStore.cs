@@ -5,7 +5,10 @@ using LadybugDB;
 namespace Penghou.Hetu;
 
 /// <summary>Durable embedded Hetu store backed by LadybugDB.</summary>
-public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
+public sealed class LadybugCodeGraphStore :
+    ICodeGraphStore,
+    ICodeGraphStoreHealthCheck,
+    IDisposable
 {
     public const int CurrentSchemaVersion = 4;
 
@@ -49,6 +52,9 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
 
     public ValueTask<CodeRepositoryIndexState?> GetLatestIndexStateAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
         _inner.GetLatestIndexStateAsync(repositoryId, cancellationToken);
+
+    public ValueTask<CodeGraphPublication?> GetLatestPublicationAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
+        _inner.GetLatestPublicationAsync(repositoryId, cancellationToken);
 
     public ValueTask StageIndexUnitAsync(CodeIndexUnitReplacement replacement, CancellationToken cancellationToken = default) =>
         MutateAsync(new("stage-replace", Replacement: replacement), cancellationToken);
@@ -232,6 +238,35 @@ public sealed class LadybugCodeGraphStore : ICodeGraphStore, IDisposable
             ? CurrentSchemaVersion
             : ParseVersion(row[0]?.ToString());
         return new(version == CurrentSchemaVersion, version, Count("HetuRepository"), Count("HetuRun"), Count("HetuUnit"));
+    }
+
+    public ValueTask<CodeGraphStoreHealth> CheckHealthAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var health = CheckHealth();
+            return new(new CodeGraphStoreHealth(
+                health.IsHealthy
+                    ? CodeGraphStoreHealthStatus.Healthy
+                    : CodeGraphStoreHealthStatus.Unhealthy,
+                "ladybug",
+                health.IsHealthy
+                    ? null
+                    : $"Schema version {health.SchemaVersion} is incompatible with expected version {CurrentSchemaVersion}.",
+                health.SchemaVersion,
+                health.RepositoryCount,
+                health.RunCount,
+                health.IndexUnitCount));
+        }
+        catch (Exception exception)
+        {
+            return new(new CodeGraphStoreHealth(
+                CodeGraphStoreHealthStatus.Unhealthy,
+                "ladybug",
+                exception.Message));
+        }
     }
 
     public void Dispose()

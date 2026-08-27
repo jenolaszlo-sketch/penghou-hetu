@@ -333,6 +333,9 @@ public static class CodeGraphStoreConformanceSuite
         var restoredState = await store.GetLatestIndexStateAsync(
             repositoryId,
             cancellationToken).ConfigureAwait(false);
+        var restoredPublication = await store.GetLatestPublicationAsync(
+            repositoryId,
+            cancellationToken).ConfigureAwait(false);
         Require(
             restoredState is not null &&
             restoredState.IndexRunId == updateRunId &&
@@ -342,6 +345,15 @@ public static class CodeGraphStoreConformanceSuite
             restoredState.Sources[0].SourcePath == "src/Current.cs",
             "successful source state round-trip");
         checks.Add("successful-source-state-round-trip");
+        Require(
+            restoredPublication is not null &&
+            restoredPublication.RepositoryId == restoredState!.RepositoryId &&
+            restoredPublication.IndexRunId == restoredState.IndexRunId &&
+            restoredPublication.SnapshotIdentity == restoredState.SnapshotIdentity &&
+            restoredPublication.IsConsistentSnapshot == restoredState.IsConsistentSnapshot &&
+            restoredPublication.IndexIdentity == restoredState.IndexIdentity,
+            "latest publication must exactly describe the successful source state");
+        checks.Add("latest-publication-round-trip");
 
         var failedRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
         var failedRunning = new CodeIndexRunManifest(
@@ -375,6 +387,10 @@ public static class CodeGraphStoreConformanceSuite
         Require(
             stateAfterFailure?.IndexRunId == updateRunId,
             "failed runs must retain the last successful source state");
+        Require(
+            (await store.GetLatestPublicationAsync(repositoryId, cancellationToken)
+                .ConfigureAwait(false))?.IndexRunId == updateRunId,
+            "failed runs must retain the last successful publication");
         Require(
             await store.GetNodeAsync(repositoryId, failedNode.Id, cancellationToken)
                 .ConfigureAwait(false) is null,
@@ -416,6 +432,10 @@ public static class CodeGraphStoreConformanceSuite
             (await store.GetLatestIndexStateAsync(repositoryId, cancellationToken)
                 .ConfigureAwait(false))?.IndexRunId == updateRunId,
             "cancelled runs must retain the last successful source state");
+        Require(
+            (await store.GetLatestPublicationAsync(repositoryId, cancellationToken)
+                .ConfigureAwait(false))?.IndexRunId == updateRunId,
+            "cancelled runs must retain the last successful publication");
         checks.Add("cancelled-run-discards-staged-graph");
 
         await RequireThrowsAsync<CodeGraphBatchRejectedException>(async () =>

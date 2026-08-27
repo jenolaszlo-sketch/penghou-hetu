@@ -53,6 +53,60 @@ public sealed class HetuHostTests
         }
     }
 
+    [Fact]
+    public async Task ConfiguredIndexingOptions_AreDefaultsForRepositoryIndexing()
+    {
+        var tempDir = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            $"hetu-host-limit-{Guid.NewGuid():N}");
+        System.IO.Directory.CreateDirectory(tempDir);
+        try
+        {
+            await System.IO.File.WriteAllTextAsync(
+                System.IO.Path.Combine(tempDir, "Large.txt"),
+                "larger-than-four-bytes");
+            await using var host = new HetuHostBuilder()
+                .UseStore(new InMemoryCodeGraphStore())
+                .AddPlugin(new TestPlugin())
+                .WithIndexingOptions(new CodeIndexingOptions(
+                    maxSourceBytes: 4,
+                    maxTotalSourceBytes: 8))
+                .Build();
+
+            var exception = await Assert.ThrowsAsync<CodeSourceSizeLimitException>(async () =>
+                await host.IndexRepositoryAsync(
+                    new CodeRepositoryDescriptor(new("repo:limited"), tempDir),
+                    new CodeIndexRunId("run:limited")));
+
+            Assert.False(exception.IsTotalLimit);
+            Assert.Equal(4, exception.MaximumBytes);
+        }
+        finally
+        {
+            if (System.IO.Directory.Exists(tempDir))
+                System.IO.Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CheckHealthAsync_ReportsStoreAndDeterministicComposition()
+    {
+        await using var host = new HetuHostBuilder()
+            .UseStore(new InMemoryCodeGraphStore())
+            .AddPlugin(new NamedPlugin("plugin:z"))
+            .AddPlugin(new NamedPlugin("plugin:a"))
+            .AddRepositoryProvider(new NamedProvider("z-provider"))
+            .Build();
+
+        var health = await host.CheckHealthAsync();
+
+        Assert.True(health.IsReady);
+        Assert.Equal(CodeGraphStoreHealthStatus.Healthy, health.Store.Status);
+        Assert.Equal(["plugin:a", "plugin:z"],
+            health.PluginIds.Select(id => id.Value));
+        Assert.Equal(["filesystem", "z-provider"], health.RepositoryProviderNames);
+    }
+
     private sealed class TestPlugin : ICodeGraphPlugin
     {
         public CodePluginId Id { get; } = new("plugin:test");
@@ -101,5 +155,31 @@ public sealed class HetuHostTests
 
             private CodePluginId Id => new("plugin:test");
         }
+    }
+
+    private sealed class NamedPlugin(string id) : ICodeGraphPlugin
+    {
+        public CodePluginId Id { get; } = new(id);
+        public string Version => "1.0.0";
+        public string Language => id;
+        public IReadOnlyCollection<string> FileExtensions => [".named"];
+        public CodeGraphCapabilities Capabilities => CodeGraphCapabilities.None;
+        public bool CanHandle(string path) => false;
+
+        public ValueTask<ICodeGraphExtractionSession> CreateSessionAsync(
+            CodeGraphPluginContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class NamedProvider(string name) : ICodeRepositoryProvider
+    {
+        public string Name { get; } = name;
+        public bool CanOpen(CodeRepositoryDescriptor repository) => false;
+
+        public ValueTask<ICodeRepositorySource> OpenAsync(
+            CodeRepositoryDescriptor repository,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

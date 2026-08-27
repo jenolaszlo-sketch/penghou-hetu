@@ -66,6 +66,11 @@ Milestones 1 through 7 established the working foundation:
   durable restart semantics shared by memory and Ladybug providers;
 - publication-bound query envelopes with node, declaration, and edge
   contributors plus explicit traversal truncation diagnostics;
+- deterministic publication receipts and source-state identities, fail-on-change
+  publication query views, bounded batch symbol/impact queries, declarations by
+  file, and project public-surface queries;
+- a cohesive host facade with host-default indexing bounds, caller-supplied
+  store ownership, and provider-neutral content-free readiness checks;
 - separate indexing and reader contracts, cached in-memory materialization,
   adjacency indexes, and incremental Ladybug mutation handling;
 - native-provider CI, restart and corruption coverage, and recorded persistence
@@ -141,10 +146,6 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier B — query surface
 
-- **Batch symbol resolution (S)** — resolve many paths/qualified names in one
-  bounded call for Solo context assembly.
-- **Declarations-in-file and project public surface (S)** — thin query-service
-  methods over existing containment edges.
 - **Name-pattern candidate search (M)** — bounded prefix/pattern candidates
   with explicit truncation; Solo ranks results.
 

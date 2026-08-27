@@ -18,6 +18,12 @@ public sealed class CodeIndexingServiceTests
         var first = await service.IndexAsync(descriptor, new("run:first"));
 
         Assert.Equal(CodeIndexRunStatus.Completed, first.Diagnostics.Status);
+        Assert.Equal(descriptor.Id, first.Publication.RepositoryId);
+        Assert.Equal(new CodeIndexRunId("run:first"), first.Publication.IndexRunId);
+        Assert.Equal("snapshot:test", first.Publication.SnapshotIdentity);
+        Assert.True(first.Publication.IsConsistentSnapshot);
+        Assert.Equal(first.PublishedState.IndexIdentity, first.Publication.IndexIdentity);
+        Assert.Equal(64, first.Publication.IndexIdentity.Value.Length);
         Assert.Equal(1, first.Diagnostics.FilesNew);
         Assert.Equal(1, first.Diagnostics.IndexUnitsCompleted);
         Assert.Equal(2, first.Diagnostics.UnresolvedRelationships);
@@ -39,6 +45,7 @@ public sealed class CodeIndexingServiceTests
         Assert.Null(await store.GetNodeAsync(descriptor.Id, new("node:example")));
         Assert.Empty((await store.GetLatestIndexStateAsync(descriptor.Id))!.Sources);
         Assert.Equal(CodeGraphSourceChangeKind.Deleted, plugin.LastChanges.Single().Kind);
+        Assert.Equal(second.PublishedState.IndexIdentity, second.Publication.IndexIdentity);
     }
 
     [Fact]
@@ -111,7 +118,7 @@ public sealed class CodeIndexingServiceTests
         var store = new InMemoryCodeGraphStore();
         var service = Service(provider, plugin, store);
         var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
-        await service.IndexAsync(descriptor, new("run:first"));
+        var first = await service.IndexAsync(descriptor, new("run:first"));
 
         var second = await service.IndexAsync(descriptor, new("run:second"));
 
@@ -120,6 +127,11 @@ public sealed class CodeIndexingServiceTests
         Assert.Equal(Encoding.UTF8.GetByteCount("content"), second.Diagnostics.SourceBytesRead);
         Assert.Equal(3, provider.OpenCount);
         Assert.Equal(1, second.Diagnostics.FilesUnchanged);
+        Assert.Equal("run:second", second.Publication.IndexRunId.Value);
+        Assert.Equal(first.Publication.IndexIdentity, second.Publication.IndexIdentity);
+        Assert.Equal(
+            (await store.GetLatestIndexStateAsync(descriptor.Id))!.IndexIdentity,
+            second.Publication.IndexIdentity);
     }
 
     [Fact]

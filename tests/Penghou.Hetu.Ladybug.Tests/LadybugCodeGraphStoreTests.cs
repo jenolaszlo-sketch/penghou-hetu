@@ -32,7 +32,12 @@ public sealed class LadybugCodeGraphStoreTests
 
             Assert.Contains("bounded-deterministic-traversal", report.PassedChecks);
             Assert.Contains("successful-source-state-round-trip", report.PassedChecks);
+            Assert.Contains("latest-publication-round-trip", report.PassedChecks);
             Assert.True(fixture.Store!.CheckHealth().IsHealthy);
+            var health = await ((ICodeGraphStoreHealthCheck)fixture.Store)
+                .CheckHealthAsync();
+            Assert.Equal(CodeGraphStoreHealthStatus.Healthy, health.Status);
+            Assert.Equal("ladybug", health.StoreName);
         }
         finally
         {
