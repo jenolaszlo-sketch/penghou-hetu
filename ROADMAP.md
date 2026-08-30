@@ -75,6 +75,11 @@ Milestones 1 through 7 established the working foundation:
   adjacency indexes, and incremental Ladybug mutation handling;
 - native-provider CI, restart and corruption coverage, and recorded persistence
   benchmarks.
+- Ladybug replay distinguishes the latest completed publication from older
+  completed run history. Reopening after multiple successful index runs restores
+  every immutable run manifest while only the latest run restores the atomic
+  repository index state; historical completion is never routed through the
+  non-success `StoreIndexRunAsync` path.
 
 This section is intentionally a summary rather than a historical delivery log.
 The tests, public API snapshots, README, and Git history are authoritative for

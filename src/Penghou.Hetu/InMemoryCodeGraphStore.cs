@@ -92,6 +92,50 @@ public sealed class InMemoryCodeGraphStore :
         }
     }
 
+    internal ValueTask RestoreIndexRunAsync(
+        CodeIndexRunManifest run,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (run.Status == CodeIndexRunStatus.Running)
+        {
+            throw new ArgumentException(
+                "Running manifests must be stored with StoreIndexRunAsync.",
+                nameof(run));
+        }
+
+        lock (_gate)
+        {
+            if (!_repositories.ContainsKey(run.RepositoryId.Value))
+            {
+                throw Rejected(
+                    CodeGraphValidationErrorKind.OwnershipMismatch,
+                    "run.repository.missing",
+                    "The index run repository is not registered.");
+            }
+
+            var key = new RunKey(run.RepositoryId.Value, run.Id.Value);
+            if (!_runs.TryGetValue(key, out var existing))
+            {
+                throw new InvalidOperationException(
+                    "The index run must be registered before terminal history can be restored.");
+            }
+            if (existing.Status != CodeIndexRunStatus.Running)
+            {
+                if (RunsEquivalent(existing, run))
+                    return ValueTask.CompletedTask;
+                throw new InvalidOperationException(
+                    "Terminal index-run history cannot be replaced.");
+            }
+
+            _runs[key] = run;
+            _staged.Remove(key);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask CompleteIndexRunAsync(
         CodeIndexRunManifest completedRun,
         CodeRepositoryIndexState state,

@@ -123,6 +123,61 @@ public sealed class LadybugCodeGraphStoreTests
     }
 
     [Fact]
+    public async Task Store_ReopensHistoricalAndLatestCompletedRuns()
+    {
+        var path = TemporaryDatabasePath();
+        EnsureNativeRuntime(path);
+        var repositoryId = new CodeRepositoryId("repo:completed-history");
+        var firstRunId = new CodeIndexRunId("run:completed-history:first");
+        var secondRunId = new CodeIndexRunId("run:completed-history:second");
+        var started = DateTimeOffset.UtcNow;
+        try
+        {
+            using (var first = new LadybugCodeGraphStore(path))
+            {
+                await first.UpsertRepositoryAsync(new(repositoryId));
+                await CompleteAsync(first, firstRunId, started);
+                await CompleteAsync(first, secondRunId, started.AddSeconds(2));
+            }
+
+            using var reopened = new LadybugCodeGraphStore(path);
+
+            Assert.Equal(
+                CodeIndexRunStatus.Completed,
+                (await reopened.GetIndexRunAsync(repositoryId, firstRunId))!.Status);
+            Assert.Equal(
+                CodeIndexRunStatus.Completed,
+                (await reopened.GetIndexRunAsync(repositoryId, secondRunId))!.Status);
+            Assert.Equal(
+                secondRunId,
+                (await reopened.GetLatestIndexStateAsync(repositoryId))!.IndexRunId);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+
+        async Task CompleteAsync(
+            LadybugCodeGraphStore store,
+            CodeIndexRunId runId,
+            DateTimeOffset runStarted)
+        {
+            await store.StoreIndexRunAsync(new(
+                repositoryId,
+                runId,
+                runStarted));
+            await store.CompleteIndexRunAsync(
+                new(
+                    repositoryId,
+                    runId,
+                    runStarted,
+                    CodeIndexRunStatus.Completed,
+                    runStarted.AddSeconds(1)),
+                new(repositoryId, runId, []));
+        }
+    }
+
+    [Fact]
     public async Task Store_ReopensStagedRunWithoutPublishingItAndCanResumePublication()
     {
         var path = TemporaryDatabasePath();
