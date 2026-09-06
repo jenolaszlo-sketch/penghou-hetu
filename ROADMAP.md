@@ -85,6 +85,190 @@ This section is intentionally a summary rather than a historical delivery log.
 The tests, public API snapshots, README, and Git history are authoritative for
 already completed work.
 
+## Marang Gate 0.5 / Batch 4 handoff
+
+The current `0.2.0-preview.3` baseline is usable as a bounded, provider-neutral
+graph source for Marang. This is an integration boundary and audit record; it
+does not make Marang workflow semantics part of Hetu.
+
+### Usable now in Hetu
+
+- Stable repository, publication, and source-state identities, including the
+  deterministic `CodeIndexIdentity`; symbol, node, and physical declaration
+  identities are separate and stable (`CodeIndexIdentity.cs`,
+  `CodeIdentities.cs`, `CodeIndexIdentityTests.cs`).
+- Bounded exact lookup, declarations-in-file, public-surface, neighborhood,
+  dependency/dependent, caller/callee, implementation, and incoming impact
+  traversals. `CodeGraphQueryEnvelope<T>` binds results to the publication,
+  applied query, and contributor provenance (`CodeGraphQueryService.cs`,
+  `CodeGraphPublicationQuery.cs`).
+- Contributor provenance through plugin/version/index-unit/source ownership,
+  explicit ambiguity and traversal truncation, and source drift detection at
+  the planning/extraction boundary (`CodeGraphFacts.cs`,
+  `CodeIndexingLifecycle.cs`).
+- Run-scoped staging, atomic publication, bounded plugin concurrency, and
+  durable Ladybug restart/recovery with corruption and interrupted-transaction
+  coverage (`InMemoryCodeGraphStore.cs`, `LadybugCodeGraphStore.cs`, and their
+  lifecycle/provider tests).
+
+### Reusable upstream follow-ups
+
+These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
+
+1. **P1 — Immutable historical graph snapshots or export references.** A
+   publication-bound view fails when the latest publication moves, but Hetu
+   retains only the latest graph. Add a bounded, integrity-checked snapshot or
+   export reference so a later query can reproduce the original result.
+2. **P1 — Repository/workspace revisions and freshness semantics.** Promote the
+   existing workspace/revision design into a contract with explicit fresh,
+   stale, and source-conflict states; keep the published graph separate from a
+   working revision. See the [workspace experiment](docs/workspaces-design.md).
+3. **P1 — Affected-test query.** Add provider-neutral test-to-production
+   relationships or an equivalent bounded derived query; the current C# graph
+   has no reliable affected-test result.
+4. **P1 — Same-repository concurrent publication ordering.** Define admission,
+   conflict, or monotonic ordering for concurrent indexing runs; the store
+   serializes mutations but does not define which competing completed run wins.
+
+Explicit path/shortest-path queries and changed-symbol convenience methods can
+remain later follow-ups; Marang can compose current traversals in the interim.
+
+### Marang-owned adapter boundary
+
+Workflow/task/node ownership mapping and `SupervisorContextPackage` shaping,
+ranking, redaction, and final context budgets remain Marang responsibilities.
+The adapter should use Hetu's publication, typed fact identities, locations,
+evidence, query descriptor, and contributor provenance as its references rather
+than adding workflow IDs to the Hetu graph model.
+
+### Security and resource notes
+
+Hetu bounds source enumeration/materialization, ingestion batches, and each
+query, but there is no global retained-graph or Ladybug replay cap. Marang must
+apply a total context budget and treat large or highly connected results as
+truncated. Query envelopes may expose repository-relative paths, symbol names,
+properties, and documentation summaries; adapter output must apply its own
+redaction and size policy. Source blobs are not persisted by the graph store.
+
+## Hongxian optional code-memory boundary
+
+Status: **design gate recorded; implementation deferred while Fuwen is the
+active priority**
+
+Hongxian sessions must remain fully usable without Hetu. The current source
+dependency audit confirms that neither `Penghou.Hongxian` nor
+`Penghou.Hongxian.Sqlite` has a Hetu, parser, graph-store, or Roslyn runtime
+dependency. Its public-API analyzer is build-only with `PrivateAssets=all`;
+future packed-consumer tests must prove that it does not flow transitively.
+
+The responsibility split is fixed:
+
+- Hongxian owns session continuity, immutable evidence, and opaque correlation.
+- Hetu owns normalized code facts, language capabilities, publication identity,
+  freshness, and code-graph queries.
+- An optional integration adapter may correlate one immutable session resource
+  revision with one exact Hetu publication. It must not copy graph nodes/edges
+  into Hongxian or add session/workflow identities to Hetu's graph model.
+
+Before Hetu multi-repository federation, structural publication deltas, Marang
+MCP exposure, parser evaluation, or delegated-work synchronization through
+Hetu:
+
+- [ ] Prove an isolated Hongxian consumer has no transitive Hetu, Roslyn, ANTLR,
+  or LadybugDB dependencies.
+- [ ] Decide the optional integration package's repository ownership without
+  changing dependency direction. `Penghou.Hongxian.Hetu` may depend on both
+  sides; Hongxian core/storage and Hetu core must not depend on it.
+- [ ] Define exact revision/publication correlation, idempotent synchronization,
+  freshness, concurrent publication ordering, superseding revisions, late
+  completion, and forward reconciliation after partial failure.
+- [ ] Keep zero adapters valid. Capability absence is discovered explicitly;
+  it is not represented by a mandatory no-op provider or an adapter-generated
+  `NotConfigured` result.
+- [ ] Preserve parser-private implementations, normalized facts, replaceable
+  graph persistence, domain-specific bounded queries, deterministic language
+  registration, and explicit installed-language/provider/store capabilities.
+- [ ] Add an enabled-path acceptance test covering R1 -> H1, R2 -> H2, exact
+  publication evidence, synchronization failure without session rollback, and
+  removal of the optional adapter without loss of generic session behavior.
+
+The integration host owns resource mapping, credentials, filesystem/network
+authority, bounds, and redaction. Opaque session metadata is correlation data,
+not authority to open a repository or activate a provider. No generic graph,
+universal parser, dynamic plugin loader, MEF composition, or MCP surface belongs
+in this boundary milestone.
+
+## Post-boundary proving sequence — shared workspaces and structural catch-up
+
+Status: **planned after Fuwen is usable and the Hongxian optional-capability
+boundary is proven**
+
+The product hypothesis is that Hetu can reduce the supervisor's catch-up cost
+after delegated coding work. Validate that hypothesis in Marang before growing
+Hetu into a broad federation platform.
+
+### Gate A — reproducible repository publications
+
+The current store retains historical run manifests but restores only the latest
+graph. A workspace manifest containing old publication IDs is therefore not a
+reproducible structural snapshot by itself.
+
+- [ ] Complete the existing immutable historical graph snapshot/export-reference
+  work before claiming reproducible workspace publications or deltas.
+- [ ] Bind each retained graph state to its repository identity, exact source
+  state, plugin/version set, fact vocabulary/schema, and integrity metadata.
+- [ ] Define retention failure explicitly: a workspace publication whose member
+  graph is unavailable is identifiable but not queryable and must never fall
+  through to the repository's latest graph.
+
+### Gate B — immutable multi-repository composition
+
+- [ ] Add stable workspace identity and a canonical immutable publication
+  manifest containing an ordered mapping from repository identity to exact
+  repository publication. Do not flatten repositories into one anonymous graph.
+- [ ] Make creation idempotent and content-addressed, reject duplicate repository
+  identities and mismatched source state, and preserve predecessor/lineage
+  without using wall-clock order as authority.
+- [ ] Keep composition separate from federation. The first workspace publication
+  may provide deterministic membership and per-repository query routing without
+  claiming cross-repository symbol resolution.
+- [ ] Add explicit branch/candidate lineage. Parallel workers produce separate
+  candidate publications; an integration or promotion step creates a new
+  publication. Do not pretend independently edited branches automatically form
+  one later workspace state.
+
+### Gate C — bounded structural change
+
+- [ ] Define a raw `GraphChangeSet` over two available immutable publications:
+  added/removed/stably identified changed facts and edges, with contributor and
+  evidence changes preserved. Define “changed” precisely rather than comparing
+  display names or mutable locations.
+- [ ] Keep factual graph delta separate from derived impact analysis. Impacted
+  nodes/repositories require their own query descriptor, bounds, truncation,
+  evidence, and algorithm/version identity.
+- [ ] Bound or page every delta dimension and provide deterministic summaries so
+  a large rename or regenerated project cannot exhaust MCP or model context.
+- [ ] Distinguish unavailable history, incompatible schema/plugin semantics,
+  ambiguous identity, and source drift from a valid empty change set.
+
+### Gate D — Marang/Codex evaluation
+
+- [ ] Expose only a minimal, authorization-scoped, bounded code-query and
+  structural-catch-up surface through Marang. Hetu does not acquire an MCP host.
+- [ ] Compare paired tasks pinned to the same source/publication state, recording
+  source reads, searches, relevant relationships found/missed, false facts,
+  elapsed time, and observable token use. Treat token measurements as noisy.
+- [ ] Use independently reviewable expected facts or labeled fixtures for parser
+  precision/recall. Codex may discover discrepancies but is not the correctness
+  oracle; confirmed defects become regression tests.
+- [ ] Stop or narrow the feature if structural catch-up does not materially
+  reduce source inspection or if false relationships increase review risk.
+
+Cross-repository resolution follows composition only when a concrete query needs
+it. Any relationship across repositories requires evidence such as an explicit
+project/package/workspace mapping and exact version provenance; a package
+version must not silently resolve to an unrelated working-tree checkout.
+
 ## Milestone 7.5 — useful semantic relationships
 
 The query surface exists, but the C# plugin must emit the relationships that
@@ -171,9 +355,10 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Explicitly not now
 
-Textual query language, SCIP/LSIF export, embeddings or vector search, and
-multi-repository federation remain out of scope; revisit only on demonstrated
-ecosystem demand.
+Textual query language, SCIP/LSIF export, and embeddings or vector search remain
+out of scope. Multi-repository composition and narrowly evidenced federation
+follow only the post-boundary proving sequence above; do not fold them into the
+semantic-relationship milestone.
 
 ## Milestone 8 — dogfood with Solo
 

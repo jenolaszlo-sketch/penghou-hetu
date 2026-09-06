@@ -84,6 +84,26 @@ public-API surface tests.
 7. **Benchmarks not CI-integrated** - harness is documented and reproducible;
    consider a scheduled or manual CI job so regressions surface.
 
+## Marang Gate 0.5 / Batch 4 handoff
+
+The Gate 0.5 audit is recorded in the [roadmap handoff](../ROADMAP.md#marang-gate-05--batch-4-handoff).
+The existing publication/index identities, typed symbol/node/declaration
+identities, bounded query envelopes and traversals, contributor provenance,
+source-drift detection, and staged durable recovery are reusable now. The
+provider-neutral gaps are immutable historical snapshot/export references,
+workspace/repository revision and freshness states, affected-test queries, and
+an explicit same-repository concurrent-publication ordering policy.
+
+Workflow/task/node ownership mapping and `SupervisorContextPackage` shaping are
+deliberately Marang adapter concerns. Explicit path queries and changed-symbol
+convenience methods are later enhancements, not Gate 0.5 blockers.
+
+For resource and security review, per-source/total materialization and
+per-query bounds do not impose a global retained-graph or replay cap. Query
+envelopes can carry paths, names, properties, and documentation summaries, so
+the Marang adapter must enforce total context budgets and redaction. Hetu's
+graph store does not persist source blobs.
+
 ## Done well (preserve)
 
 1. Conformance suite as executable contract for every durable store provider.
