@@ -166,12 +166,7 @@ internal static class DurableCommandLog
         }
     }
 
-    private static JsonSerializerOptions CreateSerializerOptions()
-    {
-        var options = new JsonSerializerOptions();
-        options.Converters.Add(new RepositoryManifestConverter());
-        return options;
-    }
+    private static JsonSerializerOptions CreateSerializerOptions() => CodeJsonDefaults.Options;
 
     internal sealed record PersistedCommand(
         string Kind,
@@ -183,39 +178,4 @@ internal static class DurableCommandLog
         CodeIndexRunId? RunId = null,
         CodePluginId? PluginId = null,
         CodeIndexUnitId? UnitId = null);
-
-    // Hand-written for durable-log version tolerance: older rows may omit
-    // DisplayName/SourceUri, and RegisteredAt defaults to UtcNow. Keep unless
-    // System.Text.Json gains an equivalent tolerant path.
-    private sealed class RepositoryManifestConverter : JsonConverter<CodeRepositoryManifest>
-    {
-        public override CodeRepositoryManifest Read(
-            ref Utf8JsonReader reader,
-            Type typeToConvert,
-            JsonSerializerOptions options)
-        {
-            using var document = JsonDocument.ParseValue(ref reader);
-            var root = document.RootElement;
-            return new(
-                new CodeRepositoryId(root.GetProperty("Id").GetProperty("Value").GetString()!),
-                root.TryGetProperty("DisplayName", out var name) ? name.GetString() : null,
-                root.TryGetProperty("SourceUri", out var uri) ? uri.GetString() : null,
-                root.GetProperty("RegisteredAt").GetDateTimeOffset());
-        }
-
-        public override void Write(
-            Utf8JsonWriter writer,
-            CodeRepositoryManifest value,
-            JsonSerializerOptions options)
-        {
-            writer.WriteStartObject();
-            writer.WriteStartObject("Id");
-            writer.WriteString("Value", value.Id.Value);
-            writer.WriteEndObject();
-            writer.WriteString("DisplayName", value.DisplayName);
-            writer.WriteString("SourceUri", value.SourceUri);
-            writer.WriteString("RegisteredAt", value.RegisteredAt);
-            writer.WriteEndObject();
-        }
-    }
 }

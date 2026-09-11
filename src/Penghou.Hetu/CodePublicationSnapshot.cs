@@ -30,7 +30,7 @@ public sealed record CodePublicationSnapshot
 {
     public const int CurrentSchemaVersion = 1;
 
-    private static readonly JsonSerializerOptions HashOptions = new();
+    private static JsonSerializerOptions HashOptions => CodeJsonDefaults.Options;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public required CodeRepositoryManifest Repository { get; init; }
@@ -90,6 +90,44 @@ public sealed record CodePublicationSnapshot
     }
 
     /// <summary>
+    /// Serializes the snapshot (including its integrity hash) for transport
+    /// to another process or machine, such as index-in-CI/query-locally flows.
+    /// </summary>
+    public string ToJson() => JsonSerializer.Serialize(this, HashOptions);
+
+    /// <summary>
+    /// Reads a snapshot produced by <see cref="ToJson"/>, verifying schema,
+    /// consistency, bounds, and integrity before returning it. Corrupt or
+    /// hostile payloads fail explicitly; nothing is written anywhere.
+    /// </summary>
+    public static CodePublicationSnapshot FromJson(
+        string json,
+        CodeSnapshotOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        var bounds = options ?? new CodeSnapshotOptions();
+        ValidateBounds(bounds);
+        if (System.Text.Encoding.UTF8.GetByteCount(json) > bounds.MaxBytes)
+            throw new CodePublicationSnapshotException(
+                "The snapshot payload exceeds the byte limit.");
+        CodePublicationSnapshot? snapshot;
+        try
+        {
+            snapshot = JsonSerializer.Deserialize<CodePublicationSnapshot>(json, HashOptions);
+        }
+        catch (JsonException exception)
+        {
+            throw new CodePublicationSnapshotException(
+                $"The snapshot payload is malformed: {exception.Message}");
+        }
+        if (snapshot is null)
+            throw new CodePublicationSnapshotException(
+                "The snapshot payload is empty.");
+        snapshot.Verify(bounds);
+        return snapshot;
+    }
+
+    /// <summary>
     /// Replays the snapshot into <paramref name="target"/> through the normal
     /// staging path, reproducing the exact publication. Integrity, schema, and
     /// bounds are verified before anything is written.
@@ -102,19 +140,7 @@ public sealed record CodePublicationSnapshot
         ArgumentNullException.ThrowIfNull(target);
         var bounds = options ?? new CodeSnapshotOptions();
         ValidateBounds(bounds);
-        if (SchemaVersion != CurrentSchemaVersion)
-            throw new CodePublicationSnapshotException(
-                $"Snapshot schema {SchemaVersion} is not supported; expected {CurrentSchemaVersion}.");
-        if (CompletedRun.Status != CodeIndexRunStatus.Completed ||
-            IndexState.IndexRunId != CompletedRun.Id ||
-            IndexState.RepositoryId != CompletedRun.RepositoryId ||
-            Repository.Id != CompletedRun.RepositoryId)
-            throw new CodePublicationSnapshotException(
-                "The snapshot members do not describe one consistent publication.");
-        var payload = PayloadBytes(bounds);
-        if (!string.Equals(Hash(payload), IntegrityHash, StringComparison.OrdinalIgnoreCase))
-            throw new CodePublicationSnapshotException(
-                "The snapshot integrity hash does not match its content.");
+        Verify(bounds);
         await target.UpsertRepositoryAsync(Repository, cancellationToken).ConfigureAwait(false);
         await target.StoreIndexRunAsync(
             new CodeIndexRunManifest(
@@ -128,6 +154,23 @@ public sealed record CodePublicationSnapshot
             await target.StageIndexUnitAsync(unit, cancellationToken).ConfigureAwait(false);
         await target.CompleteIndexRunAsync(CompletedRun, IndexState, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private void Verify(CodeSnapshotOptions bounds)
+    {
+        if (SchemaVersion != CurrentSchemaVersion)
+            throw new CodePublicationSnapshotException(
+                $"Snapshot schema {SchemaVersion} is not supported; expected {CurrentSchemaVersion}.");
+        if (CompletedRun.Status != CodeIndexRunStatus.Completed ||
+            IndexState.IndexRunId != CompletedRun.Id ||
+            IndexState.RepositoryId != CompletedRun.RepositoryId ||
+            Repository.Id != CompletedRun.RepositoryId)
+            throw new CodePublicationSnapshotException(
+                "The snapshot members do not describe one consistent publication.");
+        var payload = PayloadBytes(bounds);
+        if (!string.Equals(Hash(payload), IntegrityHash, StringComparison.OrdinalIgnoreCase))
+            throw new CodePublicationSnapshotException(
+                "The snapshot integrity hash does not match its content.");
     }
 
     private byte[] PayloadBytes(CodeSnapshotOptions bounds)
@@ -149,7 +192,7 @@ public sealed record CodePublicationSnapshot
             throw new CodePublicationSnapshotException(
                 $"The snapshot holds {edges} edges, above the limit of {bounds.MaxEdges}.");
         var payload = JsonSerializer.SerializeToUtf8Bytes(
-            new SnapshotPayload(SchemaVersion, Repository, CompletedRun, IndexState, Units),
+            this with { IntegrityHash = string.Empty },
             HashOptions);
         if (payload.Length > bounds.MaxBytes)
             throw new CodePublicationSnapshotException(
@@ -168,11 +211,4 @@ public sealed record CodePublicationSnapshot
                 nameof(bounds),
                 "Snapshot bounds must be positive.");
     }
-
-    private sealed record SnapshotPayload(
-        int SchemaVersion,
-        CodeRepositoryManifest Repository,
-        CodeIndexRunManifest Run,
-        CodeRepositoryIndexState State,
-        IReadOnlyList<CodeIndexUnitReplacement> Units);
 }

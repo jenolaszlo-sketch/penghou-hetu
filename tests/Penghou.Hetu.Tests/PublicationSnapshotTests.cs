@@ -116,6 +116,65 @@ public sealed class PublicationSnapshotTests
                 new InMemoryCodeGraphStore(), repositoryId).AsTask());
     }
 
+    [Fact]
+    public async Task Snapshot_JsonRoundTripImportsIdenticalPublication()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:transport");
+        var pluginId = new CodePluginId("plugin:transport");
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        var runId = new CodeIndexRunId("run:v1");
+        var started = DateTimeOffset.UtcNow;
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        var node = Node("a", "Example.A");
+        await store.StageIndexUnitAsync(
+            new CodeIndexUnitReplacement(
+                new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:one")),
+                [node]));
+        await store.CompleteIndexRunAsync(
+            new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+            new(repositoryId, runId, [Source("src/A.cs", "plugin:transport")], "snapshot:v1", true));
+
+        var snapshot = await CodePublicationSnapshot.ExportAsync(store, repositoryId);
+        var transported = CodePublicationSnapshot.FromJson(snapshot.ToJson());
+        Assert.Equal(snapshot.IntegrityHash, transported.IntegrityHash);
+
+        var restored = new InMemoryCodeGraphStore();
+        await transported.ImportAsync(restored);
+        Assert.Equal(
+            await store.GetLatestPublicationAsync(repositoryId),
+            await restored.GetLatestPublicationAsync(repositoryId));
+        Assert.Equal(
+            (await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.A"))[0].Id,
+            (await restored.FindNodesByQualifiedNameAsync(repositoryId, "Example.A"))[0].Id);
+    }
+
+    [Fact]
+    public async Task Snapshot_CorruptJsonIsRejected()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:corrupt");
+        var pluginId = new CodePluginId("plugin:corrupt");
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        var runId = new CodeIndexRunId("run:v1");
+        var started = DateTimeOffset.UtcNow;
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        await store.StageIndexUnitAsync(
+            new CodeIndexUnitReplacement(
+                new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:one")),
+                [Node("a", "Example.A")]));
+        await store.CompleteIndexRunAsync(
+            new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+            new(repositoryId, runId, [Source("src/A.cs", "plugin:corrupt")], "snapshot:v1", true));
+
+        var snapshot = await CodePublicationSnapshot.ExportAsync(store, repositoryId);
+        var tampered = snapshot.ToJson().Replace("Example.A", "Example.Evil", StringComparison.Ordinal);
+        Assert.Throws<CodePublicationSnapshotException>(() => CodePublicationSnapshot.FromJson(tampered));
+        Assert.Throws<CodePublicationSnapshotException>(() => CodePublicationSnapshot.FromJson("{broken"));
+        Assert.Throws<CodePublicationSnapshotException>(
+            () => CodePublicationSnapshot.FromJson(snapshot.ToJson(), new CodeSnapshotOptions { MaxBytes = 16 }));
+    }
+
     private static CodeGraphNode Node(string id, string qualifiedName) =>
         new(
             new CodeNodeId($"node:{id}"),

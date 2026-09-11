@@ -353,12 +353,13 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier C — strategic
 
-- **Publication snapshot export/import (M, object form landed)** —
-  store-agnostic, bounded, schema-versioned serialized publications with
-  integrity hashes and explicit compatibility rules; enables index-in-CI,
-  query-locally workflows and makes LatticeDb optional for read-only
-  consumers. The in-process snapshot/import path exists; serialized transport
-  is the remaining piece.
+- **Publication snapshot export/import (M, landed on
+  `feature/latticedb-provider`)** — store-agnostic, bounded,
+  schema-versioned serialized publications with integrity hashes and explicit
+  compatibility rules; enables index-in-CI, query-locally workflows and makes
+  LatticeDb optional for read-only consumers. `ToJson`/`FromJson` transport
+  re-verifies schema, consistency, bounds, and hash; corrupt payloads fail
+  explicitly.
 - **Test-to-production mapping (M)** — detect test projects and emit exercised
   -by relationships once semantic calls land, so impact sets include the tests
   to run.

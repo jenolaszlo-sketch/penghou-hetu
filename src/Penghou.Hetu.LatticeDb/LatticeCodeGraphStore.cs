@@ -15,13 +15,13 @@ namespace Penghou.Hetu;
 /// structure only when the managed LatticeDbSharp surface exposes edge traversal
 /// and property indexes; until then readers delegate to the inner store.
 /// </para>
-    /// <para>
-    /// Ownership and errors: a database file has a single owner process while open.
-    /// Opening a second store on the same path (in- or out-of-process) fails rather
-    /// than queuing. Native failures surface as <see cref="Hetu.CodeGraphStoreException"/>
-    /// with the engine error preserved as the inner exception; Hetu validation
-    /// failures keep their <see cref="Hetu.CodeGraphBatchRejectedException"/> contract.
-    /// </para>
+/// <para>
+/// Ownership and errors: a database file has a single owner process while open.
+/// Opening a second store on the same path (in- or out-of-process) fails rather
+/// than queuing. Native failures surface as <see cref="Hetu.CodeGraphStoreException"/>
+/// with the engine error preserved as the inner exception; Hetu validation
+/// failures keep their <see cref="Hetu.CodeGraphBatchRejectedException"/> contract.
+/// </para>
 /// <para>
 /// Schema evolution: <see cref="CurrentSchemaVersion"/> is validated on open and
 /// mismatches are rejected; see the repository ROADMAP for the migration policy
