@@ -87,12 +87,7 @@ internal static partial class CSharpProjectDiscovery
             .Where(project => !listed.Contains(project.Path, StringComparer.OrdinalIgnoreCase))
             .Select(_ => "csharp.solution.unlisted-project")
             .Distinct());
-        var assigned = included
-            .SelectMany(project => project.SourcePaths)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var loose = sourcePaths.Where(path =>
-            !assigned.Contains(path) &&
-            !discovered.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
+        var loose = ComputeLoose(included, discovered, sourcePaths);
         if (loose.Length > 0)
             included.Add(Loose(loose));
         return new(
@@ -104,15 +99,23 @@ internal static partial class CSharpProjectDiscovery
         List<CSharpProjectModel> projects,
         IReadOnlyList<string> sourcePaths)
     {
-        var assigned = projects
-            .SelectMany(project => project.SourcePaths)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var loose = sourcePaths.Where(path =>
-            !assigned.Contains(path) &&
-            !projects.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
+        var loose = ComputeLoose(projects, projects, sourcePaths);
         if (loose.Length > 0)
             projects.Add(Loose(loose));
         return projects.OrderBy(project => project.Path, StringComparer.Ordinal).ToArray();
+    }
+
+    private static string[] ComputeLoose(
+        IEnumerable<CSharpProjectModel> assignedProjects,
+        IEnumerable<CSharpProjectModel> directoryProjects,
+        IReadOnlyList<string> sourcePaths)
+    {
+        var assigned = assignedProjects
+            .SelectMany(project => project.SourcePaths)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return sourcePaths.Where(path =>
+            !assigned.Contains(path) &&
+            !directoryProjects.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
     }
 
     /// <summary>

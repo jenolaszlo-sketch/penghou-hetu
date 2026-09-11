@@ -1186,18 +1186,6 @@ public sealed class InMemoryCodeGraphStore :
         string? factId = null) =>
         new(kind, code, message, factId);
 
-    private readonly record struct OwnerKey(
-        string RepositoryId,
-        string PluginId,
-        string IndexUnitId)
-    {
-        public static OwnerKey From(CodeFactOrigin origin) =>
-            new(
-                origin.RepositoryId.Value,
-                origin.PluginId.Value,
-                origin.IndexUnitId.Value);
-    }
-
     private readonly record struct RunKey(string RepositoryId, string RunId);
 
     private sealed class StagedRun

@@ -67,42 +67,42 @@ public sealed class CodeGraphPublicationQuery
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.References], options, cancellationToken);
+            CodeGraphTraversalPresets.References, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindCallersAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindCalleesAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindImplementationsAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Implements, CodeEdgeKinds.Inherits], options, cancellationToken);
+            CodeGraphTraversalPresets.Implementations, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindDependenciesAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindDependentsAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
     /// <summary>
     /// Returns the incoming impact set: nodes that reference, call, implement,
@@ -116,13 +116,7 @@ public sealed class CodeGraphPublicationQuery
         TraverseAsync(
             nodeId,
             CodeGraphDirection.Incoming,
-            [
-                CodeEdgeKinds.References,
-                CodeEdgeKinds.Calls,
-                CodeEdgeKinds.Implements,
-                CodeEdgeKinds.Inherits,
-                CodeEdgeKinds.DependsOn
-            ],
+            CodeGraphTraversalPresets.ImpactSet,
             options,
             cancellationToken);
 
