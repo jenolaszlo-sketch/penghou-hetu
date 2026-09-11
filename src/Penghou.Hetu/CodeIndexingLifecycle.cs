@@ -313,7 +313,7 @@ public sealed class CodeIndexingService
         CodeIndexRunId runId,
         ICodeGraphPlugin plugin,
         CodeIndexPlan plan,
-        IReadOnlyDictionary<string, MaterializedSource> materialized,
+        IReadOnlyDictionary<PluginSourceKey, MaterializedSource> materialized,
         CodeRepositoryIndexState? previousState)
     {
         var previous = previousState?.Sources
@@ -324,7 +324,7 @@ public sealed class CodeIndexingService
             .Where(item => item.Source is not null)
             .Select(item =>
             {
-                var source = materialized[$"{plugin.Id.Value}\n{item.Manifest.SourcePath}"];
+                var source = materialized[new PluginSourceKey(plugin.Id, item.Manifest.SourcePath)];
                 return new CodeGraphSource(
                     item.Manifest.SourcePath,
                     item.Manifest.SourceHash,
@@ -462,7 +462,7 @@ public sealed class CodeIndexingService
             result.ObsoleteIndexUnits.Count,
             result.WarningCodes.ToArray());
 
-    private static async ValueTask<IReadOnlyDictionary<string, MaterializedSource>> MaterializeSourcesAsync(
+    private static async ValueTask<IReadOnlyDictionary<PluginSourceKey, MaterializedSource>> MaterializeSourcesAsync(
         ICodeRepositorySource repository,
         CodeIndexPlan plan,
         IReadOnlyList<ICodeGraphPlugin> plugins,
@@ -470,7 +470,7 @@ public sealed class CodeIndexingService
         CancellationToken cancellationToken)
     {
         var pluginIds = plugins.Select(plugin => plugin.Id).ToHashSet();
-        var result = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
+        var result = new Dictionary<PluginSourceKey, MaterializedSource>();
         var sourcesByPath = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
         var totalBytes = plan.HashBytesRead;
         var buffer = new byte[81920];
@@ -481,7 +481,7 @@ public sealed class CodeIndexingService
             if (sourcesByPath.TryGetValue(entry.Path, out var existing))
             {
                 result.Add(
-                    $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                    new PluginSourceKey(item.Manifest.PluginId, item.Manifest.SourcePath),
                     existing);
                 continue;
             }
@@ -518,7 +518,7 @@ public sealed class CodeIndexingService
             var materialized = new MaterializedSource(content.Array!, content.Count);
             sourcesByPath.Add(entry.Path, materialized);
             result.Add(
-                $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                new PluginSourceKey(item.Manifest.PluginId, item.Manifest.SourcePath),
                 materialized);
         }
 

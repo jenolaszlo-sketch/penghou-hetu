@@ -104,6 +104,11 @@ public sealed class CodeGraphPublicationQuery
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
             [CodeEdgeKinds.DependsOn], options, cancellationToken);
 
+    /// <summary>
+    /// Returns the incoming impact set: nodes that reference, call, implement,
+    /// inherit, or depend on <paramref name="nodeId"/>. Outgoing edges are
+    /// intentionally excluded; use neighborhood or dependency traversals for those.
+    /// </summary>
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> GetImpactSetAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,

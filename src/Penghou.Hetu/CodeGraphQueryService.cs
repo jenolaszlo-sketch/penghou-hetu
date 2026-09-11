@@ -188,6 +188,11 @@ public sealed class CodeGraphQueryService
             options,
             cancellationToken);
 
+    /// <summary>
+    /// Returns the incoming impact set: nodes that reference, call, implement,
+    /// inherit, or depend on <paramref name="nodeId"/>. Outgoing edges are
+    /// intentionally excluded; use neighborhood or dependency traversals for those.
+    /// </summary>
     public ValueTask<CodeGraphTraversalResult> GetImpactSetAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>

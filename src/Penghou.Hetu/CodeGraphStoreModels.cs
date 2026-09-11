@@ -97,7 +97,7 @@ public sealed record CodeRepositoryIndexState
             .ThenBy(source => source.SourcePath, StringComparer.Ordinal)
             .ToArray();
         if (Sources
-            .GroupBy(source => $"{source.PluginId.Value}\n{source.SourcePath}", StringComparer.Ordinal)
+            .GroupBy(source => new PluginSourceKey(source.PluginId, source.SourcePath))
             .Any(group => group.Count() > 1))
         {
             throw new ArgumentException(

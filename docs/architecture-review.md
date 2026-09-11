@@ -5,8 +5,15 @@ Reviewed: 2026-08, current `main` (0.1.0-preview line).
 are fixed; the remainder are itemized below. Resolved work is summarized once
 and no longer tracked.
 
+Branch update (2026-09, `feature/latticedb-provider`): `Ladybug` is renamed to
+the durable `LatticeDb` provider, shared log folding moves into
+`DurableCommandLog`, bounded name-pattern search lands with conformance
+coverage, and a manual benchmarks workflow is added. References below use the
+new `LatticeDb` name; behavior notes for the old `Ladybug` provider apply to
+`LatticeDb` unless stated otherwise.
+
 Scope: all five src packages (`Penghou.Hetu`, `Abstractions`, `CSharp`,
-`Ladybug`, `Testing`) plus tests, CI, benchmarks, and ROADMAP.
+`LatticeDb`, `Testing`) plus tests, CI, benchmarks, and ROADMAP.
 
 ## Resolved since review (do not re-track)
 
@@ -18,10 +25,11 @@ Scope: all five src packages (`Penghou.Hetu`, `Abstractions`, `CSharp`,
    which CompleteIndexRunAsync applies together with publication.
 3. **Unvalidated deletes** - staged deletions validate the running run and
    plugin membership like replacements do.
-4. **Ladybug command-log reconstruction** - persistence normalized: running
+4. **Durable command-log reconstruction** - persistence normalized: running
    and terminal runs load separately, staged commands persist in their own
-   HetuStage table, replay ordering is explicit.
-5. **O(N^2) Ladybug replay** - happy-path writes no longer rebuild the
+   HetuStage table, replay ordering is explicit. Shared by `LatticeDb` through
+   `DurableCommandLog` (extracted from the former `Ladybug` provider).
+5. **O(N^2) durable replay** - happy-path writes no longer rebuild the
    in-memory store; full replay remains only on the rollback path.
 6. **Per-query re-materialization** - materialized graphs cache per repository
    and invalidate on successful publication or durable restore.
@@ -47,42 +55,58 @@ Also landed since the review: store contract split into ICodeGraphIndexStore
 qualified-name, declaration, and traversal reads; CI format gate plus a
 windows/linux/macos matrix; BENCHMARKS.md with a reproducible harness; runtime
 public-API surface tests.
+
+Also landed on `feature/latticedb-provider`: bounded name-pattern candidate
+search (`FindNodesByNamePatternAsync` with conformance checks for substring,
+case-insensitive, bounded deterministic, and empty results); manual
+`.github/workflows/benchmarks.yml` (`workflow_dispatch` with short/default
+jobs plus artifact upload); C# plugin split into partials without behavior
+change.
 ## Open findings
 
 ### A. Maintainability / OOP
 
-1. **Package identity blur in namespaces** - CSharpCodeGraphPlugin,
-   CSharpProjectDiscovery, and all Ladybug types still use the common
-   Penghou.Hetu namespace. Namespaces do not control package dependencies, so
-   this is solely a discoverability and API-navigation decision. Decide before
-   stable release whether package-specific namespaces improve clarity enough
-   to justify the additional imports and breaking rename.
-2. **Composite string keys as convention** - plugin/path keys joined with a
-   newline separator remain twice in CodeIndexingLifecycle; they rely on an
-   implicit no-newline-in-paths invariant. Prefer one shared readonly record
-   struct key type per concept.
-3. **Hand-written RepositoryManifestConverter** - System.Text.Json handles
-   positional records without it; inconsistent with the reflection path used
-   for every other payload. Delete unless there is a versioning reason.
+1. **Package identity blur in namespaces (decision recorded)** - Graph types
+   stay in the common Penghou.Hetu namespace; only registration and options
+   use Penghou.Hetu.CSharp / Penghou.Hetu.LatticeDb. No pre-stable rename:
+   the churn is not worth it, and the choice is revisited only if API
+   navigation proves painful during Solo dogfooding.
+2. **Composite string keys as convention (resolved for plugin sources)** -
+   planner, lifecycle, and index-state duplicate checks now share one
+   `PluginSourceKey` readonly record struct; no separator invariant remains
+   for that concept. `DurableCommandLog` slot keys stay strings by design:
+   they fold staged and published commands with null-fallbacks, a different
+   concept from plugin-source identity.
+3. **Hand-written RepositoryManifestConverter (kept, reason recorded)** -
+   retained for durable-log version tolerance (missing DisplayName/SourceUri,
+   default RegisteredAt); see the comment on the converter in
+   DurableCommandLog.cs.
 
 ### B. Usefulness / semantics documentation
 
 4. **Query service candidate search** - declarations-in-file, project public
    surface, bounded multi-symbol lookup, multi-seed impact queries, and
-   publication pinning have landed. Bounded name-pattern candidate search is
-   still deferred until Solo demonstrates its required filters and ranking
-   inputs.
-5. **GetImpactSetAsync is incoming-only** - reasonable definition, but document
-   the decision or add an option including outgoing edges.
+   publication pinning have landed. Bounded name-pattern candidate search has
+   landed on `feature/latticedb-provider` as an explicit substring primitive
+   (ordinal case-insensitive, ordered by qualified name then node identity,
+   explicit truncation); Solo still owns filters and ranking, so no fuzzy
+   selection belongs in core.
+5. **GetImpactSetAsync is incoming-only (documented)** - XML docs on both
+   overloads now state the incoming-only definition and point to
+   neighborhood/dependency traversals for outgoing edges.
 
 ### C. Release engineering / project hygiene
 
-6. **CI coverage gaps** - format gate and OS matrix landed, but there is no
-   coverage collection/threshold reporting and no .editorconfig. PublicApi
-   snapshots exist for Abstractions and the runtime; CSharp/Ladybug/Testing
-   have none.
-7. **Benchmarks not CI-integrated** - harness is documented and reproducible;
-   consider a scheduled or manual CI job so regressions surface.
+6. **CI coverage gaps (narrowed)** - format gate, OS matrix, minimal
+   `.editorconfig`, and `ci.yml` XPlat Code Coverage collection with artifact
+   upload have landed. PublicApi snapshots now exist for Abstractions, the
+   runtime, Testing, CSharp, and LatticeDb. Remaining: coverage thresholds
+   (no enforced floor yet).
+7. **Benchmarks partially CI-integrated (verified)** - manual
+   `.github/workflows/benchmarks.yml` (`workflow_dispatch`, short/default
+   jobs) has landed and matches the documented `--job short` harness in
+   BENCHMARKS.md; remaining work is scheduled runs and/or regression
+   thresholds.
 
 ## Marang Gate 0.5 / Batch 4 handoff
 
@@ -124,9 +148,9 @@ graph store does not persist source blobs.
 
 1. Small closes: namespace decision (#1), converter review (#3), and impact-set
    direction note (#5).
-2. Consumer value: validate the remaining candidate-search need (#4) during
-   Solo integration rather than designing fuzzy selection speculatively.
+2. Consumer value: #4 primitive has landed; validate filters and ranking needs
+   during Solo integration rather than designing fuzzy selection speculatively.
 3. Hygiene: coverage thresholds + .editorconfig + remaining API snapshots
-   (#6), then a scheduled/manual benchmark job (#7).
+   (#6), then scheduled benchmarks/regression thresholds (#7).
 4. Deeper: shared key types (#2). Revisit exact target-framework reference
    resolution only when cross-target dogfooding demonstrates material errors.

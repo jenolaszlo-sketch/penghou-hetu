@@ -183,6 +183,9 @@ internal static class DurableCommandLog
         CodePluginId? PluginId = null,
         CodeIndexUnitId? UnitId = null);
 
+    // Hand-written for durable-log version tolerance: older rows may omit
+    // DisplayName/SourceUri, and RegisteredAt defaults to UtcNow. Keep unless
+    // System.Text.Json gains an equivalent tolerant path.
     private sealed class RepositoryManifestConverter : JsonConverter<CodeRepositoryManifest>
     {
         public override CodeRepositoryManifest Read(
