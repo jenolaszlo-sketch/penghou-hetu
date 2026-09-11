@@ -115,10 +115,14 @@ does not make Marang workflow semantics part of Hetu.
 
 These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
 
-1. **P1 — Immutable historical graph snapshots or export references.** A
-   publication-bound view fails when the latest publication moves, but Hetu
-   retains only the latest graph. Add a bounded, integrity-checked snapshot or
-   export reference so a later query can reproduce the original result.
+1. **P1 — Immutable historical graph snapshots or export references
+   (landed on `feature/latticedb-provider`).** A publication-bound view fails
+   when the latest publication moves, but Hetu retains only the latest graph.
+   `CodePublicationSnapshot` now captures one publication as bounded,
+   schema-versioned, SHA-256 integrity-checked units that re-import through
+   the normal staging path, so a later query reproduces the original result.
+   Serialized transport (index-in-CI, query-locally) remains Tier C
+   follow-up work.
 2. **P1 — Repository/workspace revisions and freshness semantics.** Promote the
    existing workspace/revision design into a contract with explicit fresh,
    stale, and source-conflict states; keep the published graph separate from a
@@ -340,10 +344,12 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier C — strategic
 
-- **Publication snapshot export/import (M)** — store-agnostic, bounded,
-  schema-versioned serialized publications with integrity hashes and explicit
-  compatibility rules; enables index-in-CI, query-locally workflows and makes
-  LatticeDb optional for read-only consumers.
+- **Publication snapshot export/import (M, object form landed)** —
+  store-agnostic, bounded, schema-versioned serialized publications with
+  integrity hashes and explicit compatibility rules; enables index-in-CI,
+  query-locally workflows and makes LatticeDb optional for read-only
+  consumers. The in-process snapshot/import path exists; serialized transport
+  is the remaining piece.
 - **Test-to-production mapping (M)** — detect test projects and emit exercised
   -by relationships once semantic calls land, so impact sets include the tests
   to run.

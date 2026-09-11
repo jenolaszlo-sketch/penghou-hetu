@@ -130,6 +130,9 @@ public sealed class LatticeCodeGraphStore :
     public ValueTask<CodeGraphPublication?> GetLatestPublicationAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
         _inner.GetLatestPublicationAsync(repositoryId, cancellationToken);
 
+    public ValueTask<IReadOnlyList<CodeIndexUnitReplacement>> GetPublishedUnitsAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
+        _inner.GetPublishedUnitsAsync(repositoryId, cancellationToken);
+
     public ValueTask StageIndexUnitAsync(CodeIndexUnitReplacement replacement, CancellationToken cancellationToken = default) =>
         MutateAsync(new("stage-replace", Replacement: replacement), cancellationToken);
 

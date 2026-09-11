@@ -60,6 +60,14 @@ public interface ICodeGraphReader
         CodeRepositoryId repositoryId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Gets every published index unit for the repository in deterministic
+    /// plugin and unit order. Backs integrity-checked publication snapshots.
+    /// </summary>
+    ValueTask<IReadOnlyList<CodeIndexUnitReplacement>> GetPublishedUnitsAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default);
+
     ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
         FindNodesByQualifiedNameWithProvenanceAsync(
             CodeRepositoryId repositoryId,

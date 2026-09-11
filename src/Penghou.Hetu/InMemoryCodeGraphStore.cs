@@ -225,6 +225,23 @@ public sealed class InMemoryCodeGraphStore :
         }
     }
 
+    public ValueTask<IReadOnlyList<CodeIndexUnitReplacement>> GetPublishedUnitsAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return new(_units
+                .Where(pair => pair.Key.RepositoryId == repositoryId.Value)
+                .Select(pair => pair.Value)
+                .OrderBy(unit => unit.Origin.PluginId.Value, StringComparer.Ordinal)
+                .ThenBy(unit => unit.Origin.IndexUnitId.Value, StringComparer.Ordinal)
+                .ToArray());
+        }
+    }
+
     public ValueTask<CodeGraphStoreHealth> CheckHealthAsync(
         CancellationToken cancellationToken = default)
     {
