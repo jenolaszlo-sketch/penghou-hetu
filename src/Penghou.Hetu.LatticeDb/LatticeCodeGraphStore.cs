@@ -15,15 +15,13 @@ namespace Penghou.Hetu;
 /// structure only when the managed LatticeDbSharp surface exposes edge traversal
 /// and property indexes; until then readers delegate to the inner store.
 /// </para>
-/// <para>
-/// Ownership and errors: a database file has a single owner process while open.
-/// Opening a second store on the same path (in- or out-of-process) fails with
-/// the engine's <see cref="LatticeException"/> rather than queuing. Native
-/// failures propagate as <see cref="LatticeException"/>/
-/// <see cref="LatticeNativeException"/> with the engine error code preserved in
-/// <see cref="LatticeException.NativeErrorCode"/>; Hetu validation failures keep
-/// their <see cref="CodeGraphBatchRejectedException"/> contract.
-/// </para>
+    /// <para>
+    /// Ownership and errors: a database file has a single owner process while open.
+    /// Opening a second store on the same path (in- or out-of-process) fails rather
+    /// than queuing. Native failures surface as <see cref="Hetu.CodeGraphStoreException"/>
+    /// with the engine error preserved as the inner exception; Hetu validation
+    /// failures keep their <see cref="Hetu.CodeGraphBatchRejectedException"/> contract.
+    /// </para>
 /// <para>
 /// Schema evolution: <see cref="CurrentSchemaVersion"/> is validated on open and
 /// mismatches are rejected; see the repository ROADMAP for the migration policy
@@ -70,7 +68,9 @@ public sealed class LatticeCodeGraphStore :
     {
         if (string.IsNullOrWhiteSpace(databasePath))
             throw new ArgumentException("A LatticeDB database file path is required.", nameof(databasePath));
-        _database = LatticeDatabase.Open(databasePath, ToNativeOptions(options));
+        _database = TranslateNative(
+            () => LatticeDatabase.Open(databasePath, ToNativeOptions(options)),
+            "open database");
         _faultInjector = faultInjector;
         try
         {
@@ -249,7 +249,7 @@ public sealed class LatticeCodeGraphStore :
             await ApplyCommandAsync(_inner, command, cancellationToken).ConfigureAwait(false);
             try
             {
-                Persist(command, baseline, cancellationToken);
+                TranslateNative(() => Persist(command, baseline, cancellationToken), "persist mutation");
                 _commands = next;
             }
             catch
@@ -374,7 +374,10 @@ public sealed class LatticeCodeGraphStore :
         result.ReadAll();
     }
 
-    private void InitializeSchema()
+    private void InitializeSchema() =>
+        TranslateNative(() => InitializeSchemaCore(), "initialize schema");
+
+    private void InitializeSchemaCore()
     {
         var existing = ReadMetadata();
         if (existing is null)
@@ -400,7 +403,10 @@ public sealed class LatticeCodeGraphStore :
             throw new LatticeCodeGraphSchemaException(existing.Value, CurrentSchemaVersion);
     }
 
-    private int? ReadMetadata()
+    private int? ReadMetadata() =>
+        TranslateNative(() => ReadMetadataCore(), "read metadata");
+
+    private int? ReadMetadataCore()
     {
         using var txn = _database.BeginReadTransaction();
         using var query = _database.Prepare($"MATCH (s:{MetadataLabel}) WHERE s.key = $key RETURN s.schemaVersion");
@@ -414,7 +420,42 @@ public sealed class LatticeCodeGraphStore :
 
     private int ReadSchemaVersion() => ReadMetadata() ?? CurrentSchemaVersion;
 
-    private List<(string Key, string Payload)> ReadPairs(string label)
+    private static T TranslateNative<T>(Func<T> action, string operation)
+    {
+        try
+        {
+            return action();
+        }
+        catch (LatticeException exception)
+        {
+            throw new CodeGraphStoreException(
+                $"LatticeDB {operation} failed.",
+                "lattice",
+                exception.NativeErrorCode.ToString(),
+                exception);
+        }
+    }
+
+    private static void TranslateNative(Action action, string operation)
+    {
+        try
+        {
+            action();
+        }
+        catch (LatticeException exception)
+        {
+            throw new CodeGraphStoreException(
+                $"LatticeDB {operation} failed.",
+                "lattice",
+                exception.NativeErrorCode.ToString(),
+                exception);
+        }
+    }
+
+    private List<(string Key, string Payload)> ReadPairs(string label) =>
+        TranslateNative(() => ReadPairsCore(label), "read records");
+
+    private List<(string Key, string Payload)> ReadPairsCore(string label)
     {
         IReadOnlyList<LatticeRow> rows;
         using (var txn = _database.BeginReadTransaction())
@@ -430,7 +471,10 @@ public sealed class LatticeCodeGraphStore :
             .ToList();
     }
 
-    private List<T> ReadTable<T>(string label)
+    private List<T> ReadTable<T>(string label) =>
+        TranslateNative(() => ReadTableCore<T>(label), "read records");
+
+    private List<T> ReadTableCore<T>(string label)
     {
         IReadOnlyList<LatticeRow> rows;
         using (var txn = _database.BeginReadTransaction())
@@ -451,7 +495,10 @@ public sealed class LatticeCodeGraphStore :
             .ToList();
     }
 
-    private int Count(string label)
+    private int Count(string label) =>
+        TranslateNative(() => CountCore(label), "count records");
+
+    private int CountCore(string label)
     {
         using var txn = _database.BeginReadTransaction();
         using var query = _database.Prepare($"MATCH (s:{label}) RETURN count(s)");
@@ -491,3 +538,4 @@ public sealed class LatticeCodeGraphSchemaException : Exception
     public int ActualVersion { get; }
     public int ExpectedVersion { get; }
 }
+

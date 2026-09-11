@@ -442,7 +442,9 @@ public sealed class LatticeCodeGraphStoreTests
         try
         {
             using var first = new LatticeCodeGraphStore(path);
-            Assert.Throws<LatticeException>(() => new LatticeCodeGraphStore(path));
+            var failure = Assert.Throws<CodeGraphStoreException>(() => new LatticeCodeGraphStore(path));
+            Assert.Equal("lattice", failure.StoreName);
+            Assert.IsType<LatticeException>(failure.InnerException);
         }
         finally
         {

@@ -2,8 +2,9 @@ namespace Penghou.Hetu;
 
 /// <summary>
 /// Fluent builder for a complete Hetu host: repository providers, plugins,
-/// store selection, indexing, and queries behind one entry point. Hosts and
-/// Solo use this instead of manually assembling individual services.
+/// store selection, indexing, and queries behind one entry point. This is the
+/// canonical entry point; hosts and Solo use this instead of manually
+/// assembling individual services.
 /// </summary>
 public sealed class HetuHostBuilder
 {
