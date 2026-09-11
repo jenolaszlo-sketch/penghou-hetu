@@ -118,7 +118,7 @@ public static class CodeGraphStoreConformanceSuite
         Require(
             sharedEnvelope is not null &&
             sharedEnvelope.Publication.IndexRunId == runId &&
-            sharedEnvelope.Query.Operation == "qualified-name" &&
+            sharedEnvelope.Query.Operation == CodeQueryOperations.QualifiedName &&
             sharedEnvelope.Result.Count == 1,
             "qualified-name provenance must identify its publication and applied query");
         var sharedProvenance = sharedEnvelope!.Provenance.Single(value =>

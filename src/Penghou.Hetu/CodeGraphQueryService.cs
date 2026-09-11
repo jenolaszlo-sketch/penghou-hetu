@@ -288,7 +288,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "resolve-symbols",
+                CodeQueryOperations.ResolveSymbols,
                 QualifiedNames: names),
             results,
             DistinctProvenance(provenance));
@@ -371,7 +371,7 @@ public sealed class CodeGraphQueryService
             return new(
                 publication,
                 new CodeGraphQueryDescriptor(
-                    "declarations-in-file",
+                    CodeQueryOperations.DeclarationsInFile,
                     QualifiedName: sourcePath),
                 [],
                 []);
@@ -418,7 +418,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "declarations-in-file",
+                CodeQueryOperations.DeclarationsInFile,
                 QualifiedName: sourcePath,
                 Traversal: traversalQuery),
             ordered,
@@ -485,7 +485,7 @@ public sealed class CodeGraphQueryService
             return new(
                 publication,
                 new CodeGraphQueryDescriptor(
-                    "public-surface",
+                    CodeQueryOperations.PublicSurface,
                     QualifiedName: projectPath),
                 [],
                 []);
@@ -511,7 +511,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "public-surface",
+                CodeQueryOperations.PublicSurface,
                 QualifiedName: projectPath,
                 Traversal: traversalQuery),
             result,
@@ -572,7 +572,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "impact-sets",
+                CodeQueryOperations.ImpactSets,
                 Traversals: queries),
             new CodeGraphMultiTraversalResult(results),
             DistinctProvenance(provenance));
@@ -618,14 +618,14 @@ public sealed class CodeGraphQueryService
         return new(
             envelope.Publication,
             new CodeGraphQueryDescriptor(
-                "affected-tests",
+                CodeQueryOperations.AffectedTests,
                 Traversals: envelope.Query.Traversals),
             new CodeAffectedTestsResult(tests, envelope.Result.Truncated),
             envelope.Provenance);
     }
 
     internal static bool IsTestMethod(CodeGraphNode node) =>
-        node.Properties.TryGetValue("test-method", out var value) &&
+        node.Properties.TryGetValue(CodePropertyKeys.TestMethod, out var value) &&
         value is CodeBooleanProperty { Value: true };
 
     private ValueTask<CodeGraphTraversalResult> TraverseAsync(
@@ -684,7 +684,7 @@ public sealed class CodeGraphQueryService
                 node.Kind != CodeNodeKinds.Project &&
                 node.Kind != CodeNodeKinds.File)
             .Where(node =>
-                node.Properties.TryGetValue("access", out var access) &&
+                 node.Properties.TryGetValue(CodePropertyKeys.Access, out var access) &&
                 access is CodeTextProperty { Value: "public" })
             .OrderBy(
                 node => node.QualifiedName ?? node.Name,

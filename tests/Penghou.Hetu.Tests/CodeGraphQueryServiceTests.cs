@@ -417,7 +417,7 @@ public sealed class CodeGraphQueryServiceTests
         var envelope = await queries.GetAffectedTestsWithProvenanceAsync(
             repositoryId, [production.Id]);
         Assert.NotNull(envelope);
-        Assert.Equal("affected-tests", envelope.Query.Operation);
+        Assert.Equal(CodeQueryOperations.AffectedTests, envelope.Query.Operation);
         Assert.Equal(
             (await store.GetLatestPublicationAsync(repositoryId))!.IndexRunId,
             envelope.Publication.IndexRunId);
@@ -431,7 +431,7 @@ public sealed class CodeGraphQueryServiceTests
         new CodeSymbolId($"symbol:{id}"),
         new Dictionary<string, CodePropertyValue>
         {
-            ["test-method"] = new CodeBooleanProperty(true)
+            [CodePropertyKeys.TestMethod] = new CodeBooleanProperty(true)
         });
 
     private static CodeGraphNode Node(string id, string name) => new(
@@ -490,3 +490,4 @@ public sealed class CodeGraphQueryServiceTests
             new CodeEvidence(evidenceKind, "tests", confidence:
                 evidenceKind == CodeEvidenceKind.Heuristic ? 0.9 : null));
 }
+

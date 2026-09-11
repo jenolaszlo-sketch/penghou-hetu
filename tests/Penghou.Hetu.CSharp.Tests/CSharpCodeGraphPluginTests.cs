@@ -472,14 +472,14 @@ public sealed class CSharpCodeGraphPluginTests
 
         // Tier-A ride-alongs: doc summary and attributes on the method that
         // carries them; constant literal on the field.
-        Assert.IsType<CodeTextProperty>(dispatch.Properties["doc-summary"]);
+        Assert.IsType<CodeTextProperty>(dispatch.Properties[CodePropertyKeys.DocSummary]);
         Assert.Contains(
             "Central dispatch",
-            ((CodeTextProperty)dispatch.Properties["doc-summary"]).Value);
+            ((CodeTextProperty)dispatch.Properties[CodePropertyKeys.DocSummary]).Value);
         Assert.True(
-            dispatch.Properties.ContainsKey("obsolete"),
+            dispatch.Properties.ContainsKey(CodePropertyKeys.Obsolete),
             $"obsolete not found; keys=[{string.Join(",", dispatch.Properties.Keys)}]");
-        Assert.True(limit.Properties.TryGetValue("constant-value", out var literal));
+        Assert.True(limit.Properties.TryGetValue(CodePropertyKeys.ConstantValue, out var literal));
         Assert.Equal(42, ((CodeIntegerProperty)literal).Value);
 
         // References: typeof + constant usage from the same callable.
@@ -732,20 +732,20 @@ public sealed class CSharpCodeGraphPluginTests
             node => node.Kind == CodeNodeKinds.Package && node.Name == "Newtonsoft.Json");
         Assert.Equal(
             "13.0.1",
-            ((CodeTextProperty)newtonsoft.Properties["package-version"]).Value);
+            ((CodeTextProperty)newtonsoft.Properties[CodePropertyKeys.PackageVersion]).Value);
         var serilog = Assert.Single(
             extracted.Nodes,
             node => node.Kind == CodeNodeKinds.Package && node.Name == "Serilog");
         // Conditions are preserved unexpanded: no MSBuild evaluation.
         Assert.Equal(
             "'$(TargetFramework)' == 'net10.0'",
-            ((CodeTextProperty)serilog.Properties["package-condition"]).Value);
+            ((CodeTextProperty)serilog.Properties[CodePropertyKeys.PackageCondition]).Value);
         var unversioned = Assert.Single(
             extracted.Nodes,
             node => node.Kind == CodeNodeKinds.Package && node.Name == "Local.Tool");
         Assert.Equal(
             string.Empty,
-            ((CodeTextProperty)unversioned.Properties["package-version"]).Value);
+            ((CodeTextProperty)unversioned.Properties[CodePropertyKeys.PackageVersion]).Value);
 
         var packageEdges = extracted.Edges
             .Where(edge =>
@@ -883,19 +883,19 @@ public sealed class CSharpCodeGraphPluginTests
         var test = extracted.Nodes.Single(node =>
             node.Kind == CodeNodeKinds.Callable && node.Name == "AddWorks");
         Assert.True(
-            test.Properties.TryGetValue("test-method", out var marker) &&
+            test.Properties.TryGetValue(CodePropertyKeys.TestMethod, out var marker) &&
             marker is CodeBooleanProperty { Value: true });
         // Near-miss attribute names and plain methods are never tests.
         Assert.DoesNotContain(
             extracted.Nodes,
             node => node.Kind == CodeNodeKinds.Callable &&
                 node.Name is "CustomLabeled" or "Helper" &&
-                node.Properties.ContainsKey("test-method"));
+                node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
         Assert.DoesNotContain(
             extracted.Nodes,
             node => node.Kind == CodeNodeKinds.Callable &&
                 node.Name == "Add" &&
-                node.Properties.ContainsKey("test-method"));
+                node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
     }
 
     private static async Task<Extraction> ExtractAsync(
@@ -961,3 +961,4 @@ public sealed class CSharpCodeGraphPluginTests
         CodeGraphExtractionResult Result,
         IReadOnlyList<CodeIndexUnitId> UnitIds);
 }
+

@@ -46,6 +46,7 @@ public sealed class PublicApiContractTests
             "Penghou.Hetu.CodeNodeKinds",
             "Penghou.Hetu.CodeNumberProperty",
             "Penghou.Hetu.CodePluginId",
+            "Penghou.Hetu.CodePropertyKeys",
             "Penghou.Hetu.CodePropertyValue",
             "Penghou.Hetu.CodeRelationshipCoverage",
             "Penghou.Hetu.CodeRelationshipCoverageState",

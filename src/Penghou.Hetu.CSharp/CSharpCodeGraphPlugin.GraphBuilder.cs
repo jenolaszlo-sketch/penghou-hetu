@@ -47,12 +47,12 @@ public sealed partial class CSharpCodeGraphPlugin
                     project.Path,
                     properties: new Dictionary<string, CodePropertyValue>
                     {
-                        ["language"] = new CodeTextProperty("csharp"),
-                        ["assembly-name"] = new CodeTextProperty(project.AssemblyName),
-                        ["target-framework"] = new CodeTextProperty(project.TargetFramework ?? string.Empty),
-                        ["nullable"] = new CodeTextProperty(project.Nullable ?? string.Empty),
-                        ["implicit-usings"] = new CodeBooleanProperty(project.ImplicitUsings),
-                        ["define-constants"] = new CodeTextListProperty(project.DefineConstants)
+                        [CodePropertyKeys.Language] = new CodeTextProperty("csharp"),
+                        [CodePropertyKeys.AssemblyName] = new CodeTextProperty(project.AssemblyName),
+                        [CodePropertyKeys.TargetFramework] = new CodeTextProperty(project.TargetFramework ?? string.Empty),
+                        [CodePropertyKeys.Nullable] = new CodeTextProperty(project.Nullable ?? string.Empty),
+                        [CodePropertyKeys.ImplicitUsings] = new CodeBooleanProperty(project.ImplicitUsings),
+                        [CodePropertyKeys.DefineConstants] = new CodeTextListProperty(project.DefineConstants)
                     }));
             foreach (var reference in project.ProjectReferences.Where(
                          availableDependencies.Contains))
@@ -77,8 +77,8 @@ public sealed partial class CSharpCodeGraphPlugin
                         $"nuget:{package.Name}",
                         properties: new Dictionary<string, CodePropertyValue>
                         {
-                            ["package-version"] = new CodeTextProperty(package.Version ?? string.Empty),
-                            ["package-condition"] = new CodeTextProperty(package.Condition ?? string.Empty)
+                            [CodePropertyKeys.PackageVersion] = new CodeTextProperty(package.Version ?? string.Empty),
+                            [CodePropertyKeys.PackageCondition] = new CodeTextProperty(package.Condition ?? string.Empty)
                         }));
                 AddEdge(
                     CodeEdgeKinds.DependsOn,
@@ -103,8 +103,8 @@ public sealed partial class CSharpCodeGraphPlugin
                     source.Path,
                     properties: new Dictionary<string, CodePropertyValue>
                     {
-                        ["language"] = new CodeTextProperty("csharp"),
-                        ["content-hash"] = new CodeTextProperty(source.ContentHash)
+                        [CodePropertyKeys.Language] = new CodeTextProperty("csharp"),
+                        [CodePropertyKeys.ContentHash] = new CodeTextProperty(source.ContentHash)
                     }));
             AddEdge(
                 CodeEdgeKinds.Contains,

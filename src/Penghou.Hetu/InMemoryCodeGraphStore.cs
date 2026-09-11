@@ -431,7 +431,7 @@ public sealed class InMemoryCodeGraphStore :
         return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(
             new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>(
                 publication,
-                new("qualified-name", qualifiedName),
+                    new(CodeQueryOperations.QualifiedName, qualifiedName),
                 nodes,
                 ProvenanceForNodes(graph, nodes).ToArray()));
     }
@@ -462,7 +462,7 @@ public sealed class InMemoryCodeGraphStore :
         return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(
             new CodeGraphQueryEnvelope<CodeGraphTraversalResult>(
                 publication,
-                new("traversal", Traversal: query),
+                    new(CodeQueryOperations.Traversal, Traversal: query),
                 result,
                 provenance));
     }
@@ -498,7 +498,7 @@ public sealed class InMemoryCodeGraphStore :
         return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(
             new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>(
                 publication,
-                new("declarations"),
+                    new(CodeQueryOperations.Declarations),
                 declarations,
                 provenance));
     }

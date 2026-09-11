@@ -23,10 +23,10 @@ public sealed partial class CSharpCodeGraphPlugin
         {
             var properties = new Dictionary<string, CodePropertyValue>
             {
-                ["language"] = new CodeTextProperty("csharp"),
-                ["canonical-key"] = new CodeTextProperty(CanonicalSymbolKey(symbol)),
-                ["symbol-kind"] = new CodeTextProperty(symbol.Kind.ToString().ToLowerInvariant()),
-                ["access"] = new CodeTextProperty(
+                [CodePropertyKeys.Language] = new CodeTextProperty("csharp"),
+                [CodePropertyKeys.CanonicalKey] = new CodeTextProperty(CanonicalSymbolKey(symbol)),
+                [CodePropertyKeys.SymbolKind] = new CodeTextProperty(symbol.Kind.ToString().ToLowerInvariant()),
+                [CodePropertyKeys.Access] = new CodeTextProperty(
                     symbol.DeclaredAccessibility.ToString().ToLowerInvariant())
             };
 
@@ -43,7 +43,7 @@ public sealed partial class CSharpCodeGraphPlugin
             }
             if (modifiers.Count > 0)
             {
-                properties["modifiers"] = new CodeTextProperty(
+                properties[CodePropertyKeys.Modifiers] = new CodeTextProperty(
                     string.Join(" ", modifiers.OrderBy(value => value, StringComparer.Ordinal)));
             }
 
@@ -57,14 +57,14 @@ public sealed partial class CSharpCodeGraphPlugin
                     .Order(StringComparer.Ordinal)
                     .Take(16)
                     .ToArray();
-                properties["attributes"] = new CodeTextProperty(string.Join(" ", names));
+                properties[CodePropertyKeys.Attributes] = new CodeTextProperty(string.Join(" ", names));
                 if (names.Contains("ObsoleteAttribute"))
-                    properties["obsolete"] = new CodeBooleanProperty(true);
+                    properties[CodePropertyKeys.Obsolete] = new CodeBooleanProperty(true);
                 // Test entry points are an exact framework-attribute allowlist;
                 // anything else is not a test, never guessed.
                 if (symbol is IMethodSymbol &&
                     names.Intersect(TestMethodAttributes, StringComparer.Ordinal).Any())
-                    properties["test-method"] = new CodeBooleanProperty(true);
+                    properties[CodePropertyKeys.TestMethod] = new CodeBooleanProperty(true);
             }
 
             if (symbol is IFieldSymbol { HasConstantValue: true } constant &&
@@ -72,12 +72,12 @@ public sealed partial class CSharpCodeGraphPlugin
             {
                 var literal = ToLiteral(constant.ConstantValue);
                 if (literal is not null)
-                    properties["constant-value"] = literal;
+                    properties[CodePropertyKeys.ConstantValue] = literal;
             }
 
             var summary = GetDocSummary(syntax);
             if (summary is not null)
-                properties["doc-summary"] = new CodeTextProperty(summary);
+                properties[CodePropertyKeys.DocSummary] = new CodeTextProperty(summary);
 
             return properties;
         }
