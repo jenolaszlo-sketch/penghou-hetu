@@ -13,6 +13,7 @@ public sealed class InMemoryCodeGraphStore :
         new(StringComparer.Ordinal);
     private Dictionary<OwnerKey, CodeIndexUnitReplacement> _units = [];
     private readonly Dictionary<RunKey, StagedRun> _staged = [];
+    private readonly Dictionary<RunKey, string?> _runBaselines = [];
     private readonly Dictionary<string, MaterializedGraph> _materialized =
         new(StringComparer.Ordinal);
 
@@ -71,7 +72,16 @@ public sealed class InMemoryCodeGraphStore :
             }
             _runs[key] = run;
             if (run.Status is CodeIndexRunStatus.Failed or CodeIndexRunStatus.Cancelled)
+            {
                 _staged.Remove(key);
+                _runBaselines.Remove(key);
+            }
+            else if (run.Status == CodeIndexRunStatus.Running && !_runBaselines.ContainsKey(key))
+            {
+                _runBaselines[key] = _indexStates.TryGetValue(run.RepositoryId.Value, out var state)
+                    ? state.IndexRunId.Value
+                    : null;
+            }
         }
 
         return ValueTask.CompletedTask;
@@ -182,6 +192,7 @@ public sealed class InMemoryCodeGraphStore :
             }
 
             ValidateRunTransition(running, completedRun);
+            RequireCurrentBaseline(key, completedRun.RepositoryId);
             var prospective = ApplyStagedChanges(key);
             var errors = ValidateMaterializedGraph(completedRun.RepositoryId, prospective);
             if (errors.Count > 0)
@@ -196,6 +207,7 @@ public sealed class InMemoryCodeGraphStore :
             _runs[key] = completedRun;
             _indexStates[state.RepositoryId.Value] = state;
             _staged.Remove(key);
+            _runBaselines.Remove(key);
         }
 
         return ValueTask.CompletedTask;
@@ -287,6 +299,26 @@ public sealed class InMemoryCodeGraphStore :
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Re-anchors every running run to the restored publication. Replay
+    /// registers runs before restoring publications, so without this every
+    /// resumed run would look superseded.
+    /// </summary>
+    internal void RebaseRunningRuns()
+    {
+        lock (_gate)
+        {
+            foreach (var (key, run) in _runs)
+            {
+                if (run.Status != CodeIndexRunStatus.Running)
+                    continue;
+                _runBaselines[key] = _indexStates.TryGetValue(run.RepositoryId.Value, out var state)
+                    ? state.IndexRunId.Value
+                    : null;
+            }
+        }
     }
 
     internal ValueTask RestorePublishedIndexUnitAsync(
@@ -637,6 +669,66 @@ public sealed class InMemoryCodeGraphStore :
             pair.First.PluginVersion == pair.Second.PluginVersion &&
             pair.First.SourcePath == pair.Second.SourcePath &&
             pair.First.SourceHash == pair.Second.SourceHash);
+
+    /// <summary>
+    /// Restores one historical completion without ordering checks. Replay
+    /// re-applies already-admitted history; only live completions compete.
+    /// </summary>
+    internal ValueTask RestoreCompletedRunAsync(
+        CodeIndexRunManifest completedRun,
+        CodeRepositoryIndexState state,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(completedRun);
+        ArgumentNullException.ThrowIfNull(state);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (completedRun.Status != CodeIndexRunStatus.Completed ||
+            completedRun.CompletedAt is null)
+        {
+            throw new ArgumentException(
+                "Restored history requires a completed run manifest.",
+                nameof(completedRun));
+        }
+
+        lock (_gate)
+        {
+            var key = new RunKey(completedRun.RepositoryId.Value, completedRun.Id.Value);
+            if (!_runs.TryGetValue(key, out var running))
+            {
+                throw new InvalidOperationException(
+                    "The index run must be registered before history can be restored.");
+            }
+
+            ValidateRunTransition(running, completedRun);
+            var prospective = ApplyStagedChanges(key);
+            var errors = ValidateMaterializedGraph(completedRun.RepositoryId, prospective);
+            if (errors.Count > 0)
+                throw new CodeGraphBatchRejectedException("The restored graph is invalid.", errors);
+            _units = prospective;
+            _materialized.Remove(completedRun.RepositoryId.Value);
+            _runs[key] = completedRun;
+            _indexStates[state.RepositoryId.Value] = state;
+            _staged.Remove(key);
+            _runBaselines.Remove(key);
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    private void RequireCurrentBaseline(RunKey key, CodeRepositoryId repositoryId)
+    {
+        if (!_runBaselines.TryGetValue(key, out var baseline))
+            return;
+        var current = _indexStates.TryGetValue(repositoryId.Value, out var latest)
+            ? latest.IndexRunId.Value
+            : null;
+        if (baseline != current)
+        {
+            throw new InvalidOperationException(
+                "The index run planned against a superseded publication; " +
+                "re-plan against the latest publication and retry with a new run.");
+        }
+    }
 
     private static void ValidateRunTransition(
         CodeIndexRunManifest existing,

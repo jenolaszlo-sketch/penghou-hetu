@@ -140,12 +140,13 @@ internal static class DurableCommandLog
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (command.Kind == "complete")
-                await store.CompleteIndexRunAsync(command.Run!, command.State!, cancellationToken);
+                await store.RestoreCompletedRunAsync(command.Run!, command.State!, cancellationToken);
             else if (command.Run!.Status == CodeIndexRunStatus.Completed)
                 await store.RestoreIndexRunAsync(command.Run, cancellationToken);
             else
                 await store.StoreIndexRunAsync(command.Run!, cancellationToken);
         }
+        store.RebaseRunningRuns();
         return store;
     }
 

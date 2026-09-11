@@ -135,9 +135,13 @@ These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
    `test-method` property (never inferred), and `GetAffectedTestsAsync`
    derives per-seed bounded test sets from incoming calls/references on both
    the service and publication-bound query surfaces.
-4. **P1 — Same-repository concurrent publication ordering.** Define admission,
-   conflict, or monotonic ordering for concurrent indexing runs; the store
-   serializes mutations but does not define which competing completed run wins.
+4. **P1 — Same-repository concurrent publication ordering (landed on
+   `feature/latticedb-provider`).** Mutations stay serialized, and completion
+   is now optimistic: a run records the publication it planned against at
+   registration, and completing after another publication lands fails
+   explicitly instead of silently winning. Retries use a new run id against
+   the latest publication. History replay restores without ordering checks
+   and re-anchors resumed runs, so reopen never manufactures conflicts.
 
 Explicit path/shortest-path queries and changed-symbol convenience methods can
 remain later follow-ups; Marang can compose current traversals in the interim.

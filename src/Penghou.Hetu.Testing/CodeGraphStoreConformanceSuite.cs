@@ -571,6 +571,83 @@ public static class CodeGraphStoreConformanceSuite
             "terminal index runs must reject late facts");
         checks.Add("terminal-run-rejects-late-facts");
 
+        var firstCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        var secondCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                firstCompetingId,
+                startedAt.AddSeconds(5),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                secondCompetingId,
+                startedAt.AddSeconds(6),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.CompleteIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                firstCompetingId,
+                startedAt.AddSeconds(5),
+                CodeIndexRunStatus.Completed,
+                startedAt.AddSeconds(7),
+                [pluginId]),
+            new CodeRepositoryIndexState(
+                repositoryId,
+                firstCompetingId,
+                [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+                "snapshot:ordering",
+                true),
+            cancellationToken).ConfigureAwait(false);
+        await RequireThrowsAsync<InvalidOperationException>(async () =>
+            await store.CompleteIndexRunAsync(
+                new CodeIndexRunManifest(
+                    repositoryId,
+                    secondCompetingId,
+                    startedAt.AddSeconds(6),
+                    CodeIndexRunStatus.Completed,
+                    startedAt.AddSeconds(8),
+                    [pluginId]),
+                new CodeRepositoryIndexState(
+                    repositoryId,
+                    secondCompetingId,
+                    [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:changed")],
+                    "snapshot:ordering-stale",
+                    true),
+                cancellationToken).ConfigureAwait(false));
+        checks.Add("superseded-run-completion-conflicts");
+        var thirdCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                thirdCompetingId,
+                startedAt.AddSeconds(9),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.CompleteIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                thirdCompetingId,
+                startedAt.AddSeconds(9),
+                CodeIndexRunStatus.Completed,
+                startedAt.AddSeconds(10),
+                [pluginId]),
+            new CodeRepositoryIndexState(
+                repositoryId,
+                thirdCompetingId,
+                [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+                "snapshot:ordering",
+                true),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            (await store.GetLatestPublicationAsync(repositoryId, cancellationToken)
+                .ConfigureAwait(false))?.IndexRunId == thirdCompetingId,
+            "a fresh run observes the latest publication and completes");
+        checks.Add("fresh-run-completes-after-conflict");
+
         return new CodeGraphStoreConformanceReport(checks);
     }
 

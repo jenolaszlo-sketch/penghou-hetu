@@ -15,6 +15,8 @@ public sealed class InMemoryCodeGraphStoreTests
         Assert.Contains("owned-deletion-and-shared-node-survival", report.PassedChecks);
         Assert.Contains("failed-replacement-atomic", report.PassedChecks);
         Assert.Contains("bounded-deterministic-traversal", report.PassedChecks);
+        Assert.Contains("superseded-run-completion-conflicts", report.PassedChecks);
+        Assert.Contains("fresh-run-completes-after-conflict", report.PassedChecks);
         Assert.Contains("traversal-relationship-kind-filter", report.PassedChecks);
         Assert.Contains("successful-source-state-round-trip", report.PassedChecks);
         Assert.Contains("failed-run-retains-source-state", report.PassedChecks);
