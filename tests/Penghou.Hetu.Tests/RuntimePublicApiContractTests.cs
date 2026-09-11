@@ -27,6 +27,8 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeGraphPublication",
             "Penghou.Hetu.CodeGraphPublicationChangedException",
             "Penghou.Hetu.CodeGraphPublicationQuery",
+            "Penghou.Hetu.CodeFreshnessResult",
+            "Penghou.Hetu.CodeFreshnessStatus",
             "Penghou.Hetu.CodeGraphMultiTraversalResult",
             "Penghou.Hetu.CodeGraphStoreHealth",
             "Penghou.Hetu.CodeGraphStoreHealthStatus",

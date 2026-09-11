@@ -229,6 +229,72 @@ public sealed class CodeIndexingServiceTests
         Assert.Equal(2, result.Diagnostics.PluginsExecuted);
     }
 
+    [Fact]
+    public async Task CheckFreshnessAsync_ReportsUnknownBeforeFirstIndex()
+    {
+        var files = new Dictionary<string, string> { ["src/Example.cs"] = "class Example {}" };
+        var store = new InMemoryCodeGraphStore();
+        var service = Service(new MemoryProvider(files), new LifecyclePlugin(), store);
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+
+        var freshness = await service.CheckFreshnessAsync(descriptor);
+
+        Assert.Equal(CodeFreshnessStatus.Unknown, freshness.Status);
+        Assert.Null(freshness.Publication);
+        Assert.Null(await store.GetLatestPublicationAsync(descriptor.Id));
+        Assert.Null(await store.GetLatestIndexStateAsync(descriptor.Id));
+    }
+
+    [Fact]
+    public async Task CheckFreshnessAsync_ReportsFreshWithoutTouchingTheGraph()
+    {
+        var files = new Dictionary<string, string> { ["src/Example.cs"] = "class Example {}" };
+        var plugin = new LifecyclePlugin();
+        var store = new InMemoryCodeGraphStore();
+        var service = Service(new MemoryProvider(files), plugin, store);
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+        await service.IndexAsync(descriptor, new("run:first"));
+        var executions = plugin.ExecutionCount;
+
+        var freshness = await service.CheckFreshnessAsync(descriptor);
+
+        Assert.Equal(CodeFreshnessStatus.Fresh, freshness.Status);
+        Assert.Equal(new CodeIndexRunId("run:first"), freshness.Publication!.IndexRunId);
+        Assert.Equal(0, freshness.NewCount + freshness.ChangedCount + freshness.DeletedCount);
+        Assert.Equal(1, freshness.UnchangedCount);
+        Assert.Equal(executions, plugin.ExecutionCount);
+        Assert.Equal(new CodeIndexRunId("run:first"), (await store.GetLatestPublicationAsync(descriptor.Id))!.IndexRunId);
+    }
+
+    [Fact]
+    public async Task CheckFreshnessAsync_ReportsStaleOnChangeAddAndDelete()
+    {
+        var files = new Dictionary<string, string> { ["src/Example.cs"] = "class Example {}" };
+        var store = new InMemoryCodeGraphStore();
+        var service = Service(new MemoryProvider(files), new LifecyclePlugin(), store);
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+        await service.IndexAsync(descriptor, new("run:first"));
+
+        files["src/Example.cs"] = "class Example { /* changed */ }";
+        var changed = await service.CheckFreshnessAsync(descriptor);
+        Assert.Equal(CodeFreshnessStatus.Stale, changed.Status);
+        Assert.Equal(1, changed.ChangedCount);
+
+        files["src/Added.cs"] = "class Added {}";
+        var added = await service.CheckFreshnessAsync(descriptor);
+        Assert.Equal(CodeFreshnessStatus.Stale, added.Status);
+        Assert.Equal(1, added.NewCount);
+
+        files.Clear();
+        var deleted = await service.CheckFreshnessAsync(descriptor);
+        Assert.Equal(CodeFreshnessStatus.Stale, deleted.Status);
+        Assert.Equal(1, deleted.DeletedCount);
+
+        // The published graph still serves the original publication.
+        Assert.Equal(new CodeIndexRunId("run:first"), (await store.GetLatestPublicationAsync(descriptor.Id))!.IndexRunId);
+        Assert.NotNull(await store.GetNodeAsync(descriptor.Id, new("node:example")));
+    }
+
     private static CodeIndexingService Service(
         MemoryProvider provider,
         LifecyclePlugin plugin,

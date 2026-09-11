@@ -123,10 +123,13 @@ These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
    the normal staging path, so a later query reproduces the original result.
    Serialized transport (index-in-CI, query-locally) remains Tier C
    follow-up work.
-2. **P1 — Repository/workspace revisions and freshness semantics.** Promote the
-   existing workspace/revision design into a contract with explicit fresh,
-   stale, and source-conflict states; keep the published graph separate from a
-   working revision. See the [workspace experiment](docs/workspaces-design.md).
+2. **P1 — Repository/workspace revisions and freshness semantics (freshness
+   landed on `feature/latticedb-provider`).** `CodeIndexingService.CheckFreshnessAsync`
+   compares live sources with the latest published state and reports
+   unknown/fresh/stale/source-conflict with per-status counts, bound to the
+   compared publication, without staging or publishing anything. Working
+   revisions atop a pinned publication remain workspace-experiment work (see
+   the [workspace experiment](docs/workspaces-design.md)).
 3. **P1 — Affected-test query.** Add provider-neutral test-to-production
    relationships or an equivalent bounded derived query; the current C# graph
    has no reliable affected-test result.

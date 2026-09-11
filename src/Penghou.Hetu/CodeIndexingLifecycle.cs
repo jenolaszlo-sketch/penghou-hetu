@@ -110,6 +110,72 @@ public sealed class CodeIndexingService
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>
+    /// Compares live repository sources with the latest published source state
+    /// without staging or publishing anything. <see cref="CodeFreshnessStatus.Unknown"/>
+    /// means the repository was never indexed; <see cref="CodeFreshnessStatus.SourceConflict"/>
+    /// means live sources changed underneath the check itself.
+    /// </summary>
+    public async ValueTask<CodeFreshnessResult> CheckFreshnessAsync(
+        CodeRepositoryDescriptor descriptor,
+        CodeIndexingOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        options ??= new CodeIndexingOptions();
+        await using var repository = await _repositories.OpenAsync(descriptor, cancellationToken)
+            .ConfigureAwait(false);
+        var previousState = await _store.GetLatestIndexStateAsync(descriptor.Id, cancellationToken)
+            .ConfigureAwait(false);
+        if (previousState is null)
+            return new(CodeFreshnessStatus.Unknown, null, 0, 0, 0, 0);
+        var publication = new CodeGraphPublication(
+            previousState.RepositoryId,
+            previousState.IndexRunId,
+            previousState.SnapshotIdentity,
+            previousState.IsConsistentSnapshot,
+            previousState.IndexIdentity);
+        var planner = new CodeIndexPlanner(_plugins);
+        CodeIndexPlan plan;
+        try
+        {
+            plan = await planner.CreatePlanAsync(
+                repository,
+                previousState.Sources,
+                new CodeIndexPlanningOptions(
+                    options.Planning.Enumeration,
+                    options.Planning.PluginIds,
+                    options.MaxSourceBytes,
+                    options.MaxTotalSourceBytes),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodeSourceChangedDuringIndexingException)
+        {
+            return new(CodeFreshnessStatus.SourceConflict, publication, 0, 0, 0, 0);
+        }
+        var changed = 0;
+        var unchanged = 0;
+        var added = 0;
+        var deleted = 0;
+        foreach (var item in plan.Items)
+        {
+            switch (item.Status)
+            {
+                case CodeIndexPlanStatus.New: added++; break;
+                case CodeIndexPlanStatus.Changed: changed++; break;
+                case CodeIndexPlanStatus.Unchanged: unchanged++; break;
+                case CodeIndexPlanStatus.Deleted: deleted++; break;
+            }
+        }
+        return new(
+            added + changed + deleted > 0 ? CodeFreshnessStatus.Stale : CodeFreshnessStatus.Fresh,
+            publication,
+            added,
+            changed,
+            unchanged,
+            deleted);
+    }
+
     public async ValueTask<CodeIndexingResult> IndexAsync(
         CodeRepositoryDescriptor descriptor,
         CodeIndexRunId runId,
