@@ -70,11 +70,11 @@ public class LatticeStoreBenchmarks
     }
 
     [Benchmark]
-    public CodeGraphStoreHealth ReopenAndCheckHealth()
+    public async Task<CodeGraphStoreHealth> ReopenAndCheckHealth()
     {
         _store.Dispose();
         _store = new(_databasePath);
-        return _store.CheckHealth();
+        return await _store.CheckHealthAsync();
     }
 
     private CodeIndexUnitReplacement CreateReplacement(int count, CodeIndexRunId runId)

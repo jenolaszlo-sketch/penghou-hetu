@@ -24,7 +24,7 @@ public sealed class CodeGraphPublicationQuery
         FindSymbolAsync(
             string qualifiedName,
             CancellationToken cancellationToken = default) =>
-        Require(await _queries.FindSymbolWithProvenanceAsync(
+        Require(await _queries.FindSymbolsByQualifiedNameWithProvenanceAsync(
             Publication.RepositoryId,
             qualifiedName,
             cancellationToken).ConfigureAwait(false));
@@ -157,10 +157,12 @@ public sealed class CodeGraphPublicationQuery
         IReadOnlyList<CodeGraphDeclaration>>>
         GetDeclarationsInFileAsync(
             string sourcePath,
+            CodeGraphQueryOptions? options = null,
             CancellationToken cancellationToken = default) =>
         Require(await _queries.GetDeclarationsInFileWithProvenanceAsync(
             Publication.RepositoryId,
             sourcePath,
+            options,
             cancellationToken).ConfigureAwait(false));
 
     private CodeGraphQueryEnvelope<TResult> Require<TResult>(

@@ -55,7 +55,7 @@ public sealed class CodeGraphQueryServiceTests
         await CompleteAsync(store, repositoryId, runId, pluginId, started);
 
         var result = await new CodeGraphQueryService(store)
-            .FindSymbolAsync(repositoryId, "Example.Duplicate");
+            .FindSymbolsByQualifiedNameAsync(repositoryId, "Example.Duplicate");
 
         Assert.True(result.IsAmbiguous);
         Assert.Null(result.SingleOrDefault);

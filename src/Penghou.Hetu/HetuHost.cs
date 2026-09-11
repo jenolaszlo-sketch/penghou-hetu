@@ -126,6 +126,22 @@ public sealed class HetuHost : IAsyncDisposable
             diagnostics,
             cancellationToken);
 
+    /// <summary>Compares live repository sources with the published state without indexing.</summary>
+    public ValueTask<CodeFreshnessResult> CheckFreshnessAsync(
+        CodeRepositoryDescriptor descriptor,
+        CodeIndexingOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Indexing.CheckFreshnessAsync(
+            descriptor,
+            options ?? _indexingOptions,
+            cancellationToken);
+
+    /// <summary>Opens the latest publication for multi-call context assembly.</summary>
+    public ValueTask<CodeGraphPublicationQuery?> OpenLatestPublicationAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default) =>
+        Queries.OpenLatestPublicationAsync(repositoryId, cancellationToken);
+
     /// <summary>Checks provider-neutral readiness without reading source content.</summary>
     public async ValueTask<HetuHostHealth> CheckHealthAsync(
         CancellationToken cancellationToken = default)

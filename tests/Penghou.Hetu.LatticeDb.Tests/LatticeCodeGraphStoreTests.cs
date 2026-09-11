@@ -34,7 +34,7 @@ public sealed class LatticeCodeGraphStoreTests
             Assert.Contains("traversal-relationship-kind-filter", report.PassedChecks);
             Assert.Contains("successful-source-state-round-trip", report.PassedChecks);
             Assert.Contains("latest-publication-round-trip", report.PassedChecks);
-            Assert.True(fixture.Store!.CheckHealth().IsHealthy);
+            Assert.True((await fixture.Store!.CheckHealthAsync()).IsHealthy);
             var health = await ((ICodeGraphStoreHealthCheck)fixture.Store)
                 .CheckHealthAsync();
             Assert.Equal(CodeGraphStoreHealthStatus.Healthy, health.Status);
@@ -67,8 +67,8 @@ public sealed class LatticeCodeGraphStoreTests
 
             Assert.NotNull(repository);
             Assert.Equal("Durable repository", repository.DisplayName);
-            Assert.True(reopened.CheckHealth().IsHealthy);
-            Assert.Equal(1, reopened.CheckHealth().RepositoryCount);
+            Assert.True((await reopened.CheckHealthAsync()).IsHealthy);
+            Assert.Equal(1, (await reopened.CheckHealthAsync()).RepositoryCount);
         }
         finally
         {
@@ -113,7 +113,7 @@ public sealed class LatticeCodeGraphStoreTests
             Assert.Equal(node.QualifiedName, restoredNode.QualifiedName);
             Assert.Equal(CodeIndexRunStatus.Completed, (await reopened.GetIndexRunAsync(repositoryId, runId))!.Status);
             Assert.Equal(runId, (await reopened.GetLatestIndexStateAsync(repositoryId))!.IndexRunId);
-            Assert.Equal(1, reopened.CheckHealth().IndexUnitCount);
+            Assert.Equal(1, (await reopened.CheckHealthAsync()).IndexUnitCount);
         }
         finally
         {
@@ -385,7 +385,7 @@ public sealed class LatticeCodeGraphStoreTests
         try
         {
             using var store = await LatticeCodeGraphStore.OpenAsync(path);
-            Assert.True(store.CheckHealth().IsHealthy);
+            Assert.True((await store.CheckHealthAsync()).IsHealthy);
 
             using var cancelled = new CancellationTokenSource();
             cancelled.Cancel();
@@ -408,7 +408,7 @@ public sealed class LatticeCodeGraphStoreTests
                 path,
                 new LatticeDbStoreOptions { CacheSizeMb = 32, EnableWal = true });
             await store.UpsertRepositoryAsync(new(new CodeRepositoryId("repo:options")));
-            Assert.True(store.CheckHealth().IsHealthy);
+            Assert.True((await store.CheckHealthAsync()).IsHealthy);
         }
         finally
         {
@@ -457,7 +457,7 @@ public sealed class LatticeCodeGraphStoreTests
         var store = new LatticeCodeGraphStore(path);
         try
         {
-            Assert.True(store.CheckHealth().IsHealthy);
+            Assert.True((await store.CheckHealthAsync()).IsHealthy);
         }
         finally
         {
@@ -503,8 +503,8 @@ public sealed class LatticeCodeGraphStoreTests
                 Assert.NotNull(publication);
                 Assert.Equal(state.IndexRunId, publication.IndexRunId);
             }
-            Assert.Equal(2, reopened.CheckHealth().RepositoryCount);
-            Assert.Equal(2, reopened.CheckHealth().RunCount);
+            Assert.Equal(2, (await reopened.CheckHealthAsync()).RepositoryCount);
+            Assert.Equal(2, (await reopened.CheckHealthAsync()).RunCount);
         }
         finally
         {
@@ -554,3 +554,4 @@ public sealed class LatticeCodeGraphStoreTests
 
     private sealed class InjectedPersistenceException : Exception;
 }
+

@@ -498,7 +498,7 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.Contains(coverage, value =>
             value.RelationshipKind == CodeEdgeKinds.Imports.Value);
         Assert.All(coverage, value =>
-            Assert.True(CodeRelationshipCoverageState.IsDefined(value.State)));
+            Assert.True(Enum.IsDefined(value.State)));
     }
 
     [Fact]

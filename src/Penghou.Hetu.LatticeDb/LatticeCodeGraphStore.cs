@@ -190,7 +190,7 @@ public sealed class LatticeCodeGraphStore :
         CancellationToken cancellationToken = default) =>
         _inner.GetDeclarationsWithProvenanceAsync(repositoryId, symbolId, cancellationToken);
 
-    public CodeGraphStoreHealth CheckHealth()
+    private CodeGraphStoreHealth CheckHealth()
     {
         ThrowIfDisposed();
         var version = ReadSchemaVersion();

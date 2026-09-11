@@ -118,14 +118,11 @@ public sealed record CodeGraphSourceChange
 }
 
 /// <summary>States allowed on <see cref="CodeRelationshipCoverage"/>.</summary>
-public static class CodeRelationshipCoverageState
+public enum CodeRelationshipCoverageState
 {
-    public const string Produced = "produced";
-    public const string Partial = "partial";
-    public const string NotProduced = "not-produced";
-
-    public static bool IsDefined(string state) =>
-        state is Produced or Partial or NotProduced;
+    Produced = 0,
+    Partial = 1,
+    NotProduced = 2
 }
 
 /// <summary>
@@ -145,15 +142,15 @@ public sealed record CodeRelationshipCoverage
 {
     public CodeRelationshipCoverage(
         string relationshipKind,
-        string state,
+        CodeRelationshipCoverageState state,
         int edgesEmitted,
         int unresolvedTargets)
     {
         RelationshipKind = ContractValue.Identifier(
             relationshipKind,
             nameof(relationshipKind));
-        if (!CodeRelationshipCoverageState.IsDefined(state))
-            throw new ArgumentException("Unknown relationship coverage state.", nameof(state));
+        if (!Enum.IsDefined(state))
+            throw new ArgumentOutOfRangeException(nameof(state));
         if (edgesEmitted < 0 || unresolvedTargets < 0)
             throw new ArgumentOutOfRangeException(nameof(edgesEmitted));
         if (state == CodeRelationshipCoverageState.NotProduced &&
@@ -170,7 +167,7 @@ public sealed record CodeRelationshipCoverage
     }
 
     public string RelationshipKind { get; }
-    public string State { get; }
+    public CodeRelationshipCoverageState State { get; }
     public int EdgesEmitted { get; }
     public int UnresolvedTargets { get; }
 }
