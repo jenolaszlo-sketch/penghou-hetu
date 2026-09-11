@@ -141,6 +141,7 @@ public sealed class InMemoryCodeGraphStore :
 
             _runs[key] = run;
             _staged.Remove(key);
+            _runBaselines.Remove(key);
         }
 
         return ValueTask.CompletedTask;
@@ -699,6 +700,14 @@ public sealed class InMemoryCodeGraphStore :
                     "The index run must be registered before history can be restored.");
             }
 
+            if (state.RepositoryId != completedRun.RepositoryId ||
+                state.IndexRunId != completedRun.Id)
+            {
+                throw new ArgumentException(
+                    "Restored state ownership must match the restored run.",
+                    nameof(state));
+            }
+
             ValidateRunTransition(running, completedRun);
             var prospective = ApplyStagedChanges(key);
             var errors = ValidateMaterializedGraph(completedRun.RepositoryId, prospective);
@@ -1013,6 +1022,7 @@ public sealed class InMemoryCodeGraphStore :
             if (depth >= query.MaxDepth)
             {
                 var omitted = AdjacentEdges(graph, nodeId, query.Direction)
+                    .DistinctBy(edge => edge.Id.Value)
                     .Count(edge =>
                         (selectedKinds.Count == 0 || selectedKinds.Contains(edge.Kind.Value)) &&
                         (selectedEvidence.Count == 0 || selectedEvidence.Contains(edge.Evidence.Kind)));

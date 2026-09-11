@@ -448,36 +448,6 @@ public sealed partial class CSharpCodeGraphPlugin
             ],
             StringComparer.Ordinal);
 
-        private static string? GetDocSummary(ISymbol symbol)
-        {
-            var xml = symbol.GetDocumentationCommentXml(expandIncludes: false);
-            if (string.IsNullOrWhiteSpace(xml))
-                return null;
-
-            try
-            {
-                var document = XDocument.Parse($"<root>{xml}</root>");
-                var summary = document.Root?
-                    .Element("summary")?
-                    .Value;
-                if (string.IsNullOrWhiteSpace(summary))
-                    return null;
-
-                var collapsed = string.Join(
-                    ' ',
-                    summary.Split(
-                        [' ', '\r', '\n', '\t'],
-                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-                return collapsed.Length <= 512
-                    ? collapsed
-                    : collapsed[..512];
-            }
-            catch (System.Xml.XmlException)
-            {
-                return null;
-            }
-        }
-
         private string ScopedSymbolKey(ISymbol symbol) =>
             $"{project.Path}\n{CanonicalSymbolKey(symbol)}";
 

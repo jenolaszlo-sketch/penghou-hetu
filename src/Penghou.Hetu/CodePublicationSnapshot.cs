@@ -135,8 +135,8 @@ public sealed record CodePublicationSnapshot
         if (Units.Count > bounds.MaxUnits)
             throw new CodePublicationSnapshotException(
                 $"The snapshot holds {Units.Count} units, above the limit of {bounds.MaxUnits}.");
-        var nodes = 0;
-        var edges = 0;
+        var nodes = 0L;
+        var edges = 0L;
         foreach (var unit in Units)
         {
             nodes += unit.Nodes.Count;
