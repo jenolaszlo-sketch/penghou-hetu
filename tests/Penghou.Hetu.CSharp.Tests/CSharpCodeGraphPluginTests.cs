@@ -846,6 +846,58 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.Contains("csharp.solution.missing-project", extracted.Result.WarningCodes);
     }
 
+    [Fact]
+    public async Task ExtractAsync_MarksExactAllowlistedTestMethods()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Tests.cs", """
+                namespace Xunit
+                {
+                    public class FactAttribute : System.Attribute { }
+                    public class CustomFactAttribute : System.Attribute { }
+                }
+
+                namespace Example;
+
+                public class Calculator
+                {
+                    public int Add(int a, int b) => a + b;
+                }
+
+                public class CalculatorTests
+                {
+                    [Xunit.Fact]
+                    public void AddWorks()
+                    {
+                        var calculator = new Calculator();
+                        calculator.Add(1, 2);
+                    }
+
+                    [Xunit.CustomFact]
+                    public void CustomLabeled() { }
+
+                    public void Helper() { }
+                }
+                """));
+
+        var test = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "AddWorks");
+        Assert.True(
+            test.Properties.TryGetValue("test-method", out var marker) &&
+            marker is CodeBooleanProperty { Value: true });
+        // Near-miss attribute names and plain methods are never tests.
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name is "CustomLabeled" or "Helper" &&
+                node.Properties.ContainsKey("test-method"));
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name == "Add" &&
+                node.Properties.ContainsKey("test-method"));
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {

@@ -349,6 +349,11 @@ public sealed partial class CSharpCodeGraphPlugin
                 properties["attributes"] = new CodeTextProperty(string.Join(" ", names));
                 if (names.Contains("ObsoleteAttribute"))
                     properties["obsolete"] = new CodeBooleanProperty(true);
+                // Test entry points are an exact framework-attribute allowlist;
+                // anything else is not a test, never guessed.
+                if (symbol is IMethodSymbol &&
+                    names.Intersect(TestMethodAttributes, StringComparer.Ordinal).Any())
+                    properties["test-method"] = new CodeBooleanProperty(true);
             }
 
             if (symbol is IFieldSymbol { HasConstantValue: true } constant &&
@@ -431,6 +436,17 @@ public sealed partial class CSharpCodeGraphPlugin
                 new CodeNumberProperty(Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture)),
             _ => null
         };
+
+        private static readonly HashSet<string> TestMethodAttributes = new(
+            [
+                "FactAttribute",
+                "TheoryAttribute",
+                "TestAttribute",
+                "TestCaseAttribute",
+                "TestMethodAttribute",
+                "DataTestMethodAttribute"
+            ],
+            StringComparer.Ordinal);
 
         private static string? GetDocSummary(ISymbol symbol)
         {

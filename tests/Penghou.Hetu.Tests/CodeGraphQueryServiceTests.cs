@@ -381,6 +381,59 @@ public sealed class CodeGraphQueryServiceTests
             await queries.FindNodesByNamePatternAsync(repositoryId, "order", 0));
     }
 
+    [Fact]
+    public async Task AffectedTests_ReturnsOnlyMarkedTestsReachingEachSeed()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:affected");
+        var runId = new CodeIndexRunId("run:affected");
+        var pluginId = new CodePluginId("plugin:affected");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        var production = Node("production", "Example.Production");
+        var other = Node("other", "Example.Other");
+        var test = TestNode("test", "Example.ProductionTests");
+        var helper = Node("helper", "Example.Helper");
+        await store.StageIndexUnitAsync(new(
+            new CodeFactOrigin(repositoryId, pluginId, "1.0.0", runId, new("unit:affected")),
+            [production, other, test, helper],
+            edges:
+            [
+                Relationship("test-calls", test.Id, production.Id, CodeEdgeKinds.Calls),
+                Relationship("helper-calls", helper.Id, production.Id, CodeEdgeKinds.Calls)
+            ]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+        var queries = new CodeGraphQueryService(store);
+
+        var result = await queries.GetAffectedTestsAsync(
+            repositoryId, [production.Id, other.Id]);
+
+        Assert.NotNull(result);
+        Assert.Equal([test.Id], result.TestsBySeed[production.Id.Value].Select(node => node.Id));
+        Assert.Empty(result.TestsBySeed[other.Id.Value]);
+        Assert.False(result.Truncated);
+
+        var envelope = await queries.GetAffectedTestsWithProvenanceAsync(
+            repositoryId, [production.Id]);
+        Assert.NotNull(envelope);
+        Assert.Equal("affected-tests", envelope.Query.Operation);
+        Assert.Equal(
+            (await store.GetLatestPublicationAsync(repositoryId))!.IndexRunId,
+            envelope.Publication.IndexRunId);
+    }
+
+    private static CodeGraphNode TestNode(string id, string name) => new(
+        new CodeNodeId($"node:{id}"),
+        CodeNodeKinds.Callable,
+        name[(name.LastIndexOf('.') + 1)..],
+        name,
+        new CodeSymbolId($"symbol:{id}"),
+        new Dictionary<string, CodePropertyValue>
+        {
+            ["test-method"] = new CodeBooleanProperty(true)
+        });
+
     private static CodeGraphNode Node(string id, string name) => new(
         new CodeNodeId($"node:{id}"),
         CodeNodeKinds.Callable,

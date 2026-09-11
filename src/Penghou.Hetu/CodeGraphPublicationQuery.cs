@@ -137,6 +137,17 @@ public sealed class CodeGraphPublicationQuery
             options,
             cancellationToken).ConfigureAwait(false));
 
+    public async ValueTask<CodeGraphQueryEnvelope<CodeAffectedTestsResult>>
+        GetAffectedTestsAsync(
+            IReadOnlyCollection<CodeNodeId> seedNodeIds,
+            CodeGraphQueryOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+        Require(await _queries.GetAffectedTestsWithProvenanceAsync(
+            Publication.RepositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false));
+
     public async ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>>
         GetPublicSurfaceAsync(
             string projectPath,

@@ -130,9 +130,11 @@ These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
    compared publication, without staging or publishing anything. Working
    revisions atop a pinned publication remain workspace-experiment work (see
    the [workspace experiment](docs/workspaces-design.md)).
-3. **P1 — Affected-test query.** Add provider-neutral test-to-production
-   relationships or an equivalent bounded derived query; the current C# graph
-   has no reliable affected-test result.
+3. **P1 — Affected-test query (landed on `feature/latticedb-provider`).**
+   The C# plugin marks exact allowlisted test-framework methods with a
+   `test-method` property (never inferred), and `GetAffectedTestsAsync`
+   derives per-seed bounded test sets from incoming calls/references on both
+   the service and publication-bound query surfaces.
 4. **P1 — Same-repository concurrent publication ordering.** Define admission,
    conflict, or monotonic ordering for concurrent indexing runs; the store
    serializes mutations but does not define which competing completed run wins.

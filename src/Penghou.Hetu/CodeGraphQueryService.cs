@@ -585,6 +585,56 @@ public sealed class CodeGraphQueryService
             DistinctProvenance(provenance));
     }
 
+    /// <summary>
+    /// Returns the test entry points that reach each seed through incoming
+    /// calls or references. Each seed keeps its own traversal bounds; when a
+    /// traversal truncates, tests for that seed may be partial.
+    /// </summary>
+    public async ValueTask<CodeAffectedTestsResult?> GetAffectedTestsAsync(
+        CodeRepositoryId repositoryId,
+        IReadOnlyCollection<CodeNodeId> seedNodeIds,
+        CodeGraphQueryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = await GetAffectedTestsWithProvenanceAsync(
+            repositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false);
+        return envelope?.Result;
+    }
+
+    public async ValueTask<CodeGraphQueryEnvelope<CodeAffectedTestsResult>?>
+        GetAffectedTestsWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            IReadOnlyCollection<CodeNodeId> seedNodeIds,
+            CodeGraphQueryOptions? options = null,
+            CancellationToken cancellationToken = default)
+    {
+        var envelope = await GetImpactSetsWithProvenanceAsync(
+            repositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false);
+        if (envelope is null)
+            return null;
+        var tests = new Dictionary<string, IReadOnlyList<CodeGraphNode>>(
+            StringComparer.Ordinal);
+        foreach (var (seed, result) in envelope.Result.Results)
+            tests[seed] = result.Nodes.Where(IsTestMethod).ToArray();
+        return new(
+            envelope.Publication,
+            new CodeGraphQueryDescriptor(
+                "affected-tests",
+                Traversals: envelope.Query.Traversals),
+            new CodeAffectedTestsResult(tests, envelope.Result.Truncated),
+            envelope.Provenance);
+    }
+
+    internal static bool IsTestMethod(CodeGraphNode node) =>
+        node.Properties.TryGetValue("test-method", out var value) &&
+        value is CodeBooleanProperty { Value: true };
+
     private ValueTask<CodeGraphTraversalResult> TraverseAsync(
         CodeRepositoryId repositoryId,
         CodeNodeId nodeId,

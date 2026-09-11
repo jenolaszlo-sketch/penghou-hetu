@@ -12,6 +12,7 @@ public sealed class RuntimePublicApiContractTests
             .ToArray();
         var expected = new[]
         {
+            "Penghou.Hetu.CodeAffectedTestsResult",
             "Penghou.Hetu.CodeGraphBatchValidator",
             "Penghou.Hetu.CodeGraphDirection",
             "Penghou.Hetu.CodeGraphIngestionDiagnostics",

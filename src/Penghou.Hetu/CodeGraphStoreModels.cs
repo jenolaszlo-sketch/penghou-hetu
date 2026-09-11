@@ -340,6 +340,15 @@ public sealed record CodeGraphMultiTraversalResult(
     public bool Truncated => Results.Values.Any(result => result.Truncated);
 }
 
+/// <summary>
+/// Test entry points reaching each seed, keyed by seed node identity. A node
+/// counts as a test only when it carries an explicit test marker property;
+/// test-ness is never inferred from names or locations.
+/// </summary>
+public sealed record CodeAffectedTestsResult(
+    IReadOnlyDictionary<string, IReadOnlyList<CodeGraphNode>> TestsBySeed,
+    bool Truncated);
+
 /// <summary>Privacy-safe counters from one completed index-unit ingestion.</summary>
 public sealed record CodeGraphIngestionDiagnostics(
     CodeRepositoryId RepositoryId,
