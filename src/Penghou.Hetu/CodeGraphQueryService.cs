@@ -75,6 +75,23 @@ public sealed class CodeGraphQueryService
         return new(candidates.OrderBy(node => node.Id.Value, StringComparer.Ordinal).ToArray());
     }
 
+    /// <summary>Finds candidate symbols by name-pattern match for ranking by the caller.</summary>
+    public async ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
+        CodeRepositoryId repositoryId,
+        string pattern,
+        int maxResults = CodeNamePatternResult.DefaultMaxResults,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        if (string.IsNullOrWhiteSpace(pattern))
+            throw new ArgumentException("Search pattern is required.", nameof(pattern));
+        return await _store.FindNodesByNamePatternAsync(
+            repositoryId,
+            pattern,
+            maxResults,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<CodeGraphQueryEnvelope<CodeSymbolLookupResult>?>
         FindSymbolWithProvenanceAsync(
             CodeRepositoryId repositoryId,

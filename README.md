@@ -32,7 +32,7 @@ ANTLR parsers, hand-written parsers, or other deterministic extraction tools.
 
 ## Status
 
-Hetu has a working preview runtime, C# extractor, durable Ladybug provider, and
+Hetu has a working preview runtime, C# extractor, durable LatticeDb provider, and
 shared provider conformance suite. The API remains preview-quality and is
 currently built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
 semantic milestones and first-release invariants.
@@ -44,7 +44,7 @@ semantic milestones and first-release invariants.
 | `Penghou.Hetu.Abstractions` | Parser-independent graph vocabulary, evidence, extraction sessions, and sinks |
 | `Penghou.Hetu` | Indexing orchestration, validation, in-memory storage, and query services |
 | `Penghou.Hetu.CSharp` | Roslyn-based C# extraction plugin |
-| `Penghou.Hetu.Ladybug` | Embedded LadybugDB graph-store provider |
+| `Penghou.Hetu.LatticeDb` | Embedded LatticeDB graph-store provider |
 | `Penghou.Hetu.Testing` | Reusable graph-store and plugin contract tests |
 
 The future `Penghou.Hetu.Generator` project is reserved for deterministic
@@ -267,22 +267,54 @@ ordered plugin/provider composition. Stores that do not implement the optional
 `ICodeGraphStoreHealthCheck` contract report `Unknown`, not a guessed healthy
 state.
 
-## Ladybug persistence
+## LatticeDb persistence
 
-`Penghou.Hetu.Ladybug` provides `LadybugCodeGraphStore`, an embedded durable
-implementation of the same `ICodeGraphStore` contract. It uses the official
-LadybugDB 0.19.1 managed binding, validates its schema version on open, persists
-mutations transactionally, restores state after process restart, and exposes a
-lightweight health result. Hosts must reference one matching native LadybugDB
-runtime package, such as `LadybugDB.Native.win-x64`, or the all-platform
-`LadybugDB.Native` meta-package. Native binaries are deliberately not forced on
-consumers by the provider package. The current Windows engine also requires the
-OpenSSL 3 runtime libraries (`libcrypto-3-x64.dll` and `libssl-3-x64.dll`) to be
-available to the host process.
+`Penghou.Hetu.LatticeDb` provides `LatticeCodeGraphStore`, an embedded durable
+implementation of the same `ICodeGraphStore` contract. It uses the community
+LatticeDbSharp 0.1.0-preview.1 binding for LatticeDB (an embedded single-file
+property-graph database with Cypher, vector search, full-text search, ACID
+transactions, and durable streams), validates its schema version on open,
+persists mutations transactionally, restores state after process restart, and
+exposes a lightweight health result. The database is a single file at a
+caller-supplied file path, and the verified Linux x64 and Windows x64 native
+runtimes ship inside the binding package, so hosts reference no separate
+native runtime package and need no OpenSSL installation. The store keeps a
+durable command log in LatticeDB and serves queries from a materialized
+in-memory projection; native graph structure (edges, property indexes,
+vector/full-text retrieval) becomes available to future versions as the
+managed binding surface grows, without changing Hetu's graph contracts.
+
+A file-backed host is one builder call away; the database is a single file,
+so each repository maps naturally to one path:
+
+```csharp
+await using var host = new HetuHostBuilder()
+    .AddPlugin(new CSharpCodeGraphPlugin())
+    .UseLatticeStore("C:/data/hetu/my-app.ltdb")
+    .Build();
+
+await host.IndexRepositoryAsync(
+    new CodeRepositoryDescriptor(
+        new CodeRepositoryId("repo:my-app"),
+        "C:/src/my-app"),
+    new CodeIndexRunId("run:initial"));
+
+var view = await host.Queries.OpenLatestPublicationAsync(
+    new CodeRepositoryId("repo:my-app"));
+var candidates = view is null
+    ? null
+    : await host.Queries.FindNodesByNamePatternAsync(
+        new CodeRepositoryId("repo:my-app"), "OrderService");
+```
+
+Only one process may own a database file at a time; a second owner fails fast
+with the engine error instead of queuing. Name-pattern search is a bounded,
+case-insensitive substring match callers rank themselves — exact lookup and
+traversal remain the deterministic primitives.
 
 ## Architectural boundaries
 
-- Core abstractions have no Roslyn, ANTLR, LadybugDB, LSP, SCIP, or AI dependency.
+- Core abstractions have no Roslyn, ANTLR, LatticeDB, LSP, SCIP, or AI dependency.
 - Plugins receive repository-aware extraction sessions so semantic analyzers can
   resolve project-wide and cross-file relationships.
 - Plugins emit normalized facts; they never write directly to a graph database.

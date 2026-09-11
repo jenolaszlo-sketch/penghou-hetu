@@ -465,6 +465,30 @@ public sealed class InMemoryCodeGraphStore :
         }
     }
 
+    public ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
+        CodeRepositoryId repositoryId,
+        string pattern,
+        int maxResults = CodeNamePatternResult.DefaultMaxResults,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        if (maxResults < 1 || maxResults > CodeNamePatternResult.AbsoluteMaxResults)
+            throw new ArgumentOutOfRangeException(nameof(maxResults));
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var matches = Materialize(repositoryId).Nodes.Values
+                .Where(node => MatchesNamePattern(node, pattern))
+                .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
+                .ThenBy(node => node.Id.Value, StringComparer.Ordinal)
+                .ToArray();
+            return new(new CodeNamePatternResult(
+                matches.Take(maxResults).ToArray(),
+                matches.Length));
+        }
+    }
+
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(
         CodeRepositoryId repositoryId,
         CodeSymbolId symbolId,
@@ -965,6 +989,11 @@ public sealed class InMemoryCodeGraphStore :
                 .Concat(graph.Incoming.GetValueOrDefault(nodeId) ?? []),
             _ => throw new ArgumentOutOfRangeException(nameof(direction))
         };
+
+    private static bool MatchesNamePattern(CodeGraphNode node, string pattern) =>
+        (node.QualifiedName is not null &&
+            node.QualifiedName.Contains(pattern, StringComparison.OrdinalIgnoreCase)) ||
+        node.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
 
     private bool TryGetPublication(
         CodeRepositoryId repositoryId,

@@ -35,7 +35,7 @@ jobs:
             src/Penghou.Hetu.Abstractions/Penghou.Hetu.Abstractions.csproj \
             src/Penghou.Hetu/Penghou.Hetu.csproj \
             src/Penghou.Hetu.CSharp/Penghou.Hetu.CSharp.csproj \
-            src/Penghou.Hetu.Ladybug/Penghou.Hetu.Ladybug.csproj \
+            src/Penghou.Hetu.LatticeDb/Penghou.Hetu.LatticeDb.csproj \
             src/Penghou.Hetu.Testing/Penghou.Hetu.Testing.csproj; do
             dotnet pack "$csproj" \
               --configuration Release \

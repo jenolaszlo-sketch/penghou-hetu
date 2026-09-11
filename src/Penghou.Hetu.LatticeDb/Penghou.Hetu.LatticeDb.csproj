@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\Penghou.Hetu\Penghou.Hetu.csproj" />
@@ -6,18 +6,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="LadybugDB" Version="0.19.1" />
+    <PackageReference Include="LatticeDbSharp" Version="0.1.0-preview.1" />
   </ItemGroup>
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <PackageId>Penghou.Hetu.Ladybug</PackageId>
-    <Title>Penghou Hetu Ladybug Provider</Title>
+    <PackageId>Penghou.Hetu.LatticeDb</PackageId>
+    <Title>Penghou Hetu LatticeDb Provider</Title>
     <Authors>Penghou.Hetu contributors</Authors>
-    <Description>Durable embedded LadybugDB graph store provider for Penghou.Hetu.</Description>
-    <PackageTags>ladybugdb;graph-database;code-analysis;knowledge-graph</PackageTags>
+    <Description>Durable embedded LatticeDB graph store provider for Penghou.Hetu.</Description>
+    <PackageTags>latticedb;graph-database;code-analysis;knowledge-graph</PackageTags>
     <RepositoryUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</RepositoryUrl>
     <PackageProjectUrl>https://github.com/jenolaszlo-sketch/penghou-hetu</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>

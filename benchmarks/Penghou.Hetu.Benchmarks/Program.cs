@@ -1,19 +1,18 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using Penghou.Hetu;
-using System.Runtime.InteropServices;
 
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 
 [MemoryDiagnoser]
-public class LadybugStoreBenchmarks
+public class LatticeStoreBenchmarks
 {
     private readonly CodeRepositoryId _repositoryId = new("repo:benchmark");
     private readonly CodeIndexRunId _publishedRunId = new("run:benchmark:published");
     private readonly CodeIndexRunId _stagingRunId = new("run:benchmark:staging");
     private readonly CodePluginId _pluginId = new("plugin:benchmark");
     private string _databasePath = null!;
-    private LadybugCodeGraphStore _store = null!;
+    private LatticeCodeGraphStore _store = null!;
     private CodeIndexUnitReplacement _replacement = null!;
     private CodeNodeId _middleNodeId = null!;
 
@@ -23,9 +22,7 @@ public class LadybugStoreBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        LoadWindowsOpenSsl("libcrypto-3-x64.dll");
-        LoadWindowsOpenSsl("libssl-3-x64.dll");
-        _databasePath = Path.Combine(Path.GetTempPath(), $"hetu-benchmark-{Guid.NewGuid():N}");
+        _databasePath = Path.Combine(Path.GetTempPath(), $"hetu-benchmark-{Guid.NewGuid():N}.ltdb");
         _store = new(_databasePath);
         var started = DateTimeOffset.UtcNow;
         await _store.UpsertRepositoryAsync(new(_repositoryId));
@@ -48,8 +45,8 @@ public class LadybugStoreBenchmarks
     public void Cleanup()
     {
         _store.Dispose();
-        if (Directory.Exists(_databasePath))
-            Directory.Delete(_databasePath, recursive: true);
+        if (File.Exists(_databasePath))
+            File.Delete(_databasePath);
     }
 
     [Benchmark]
@@ -73,7 +70,7 @@ public class LadybugStoreBenchmarks
     }
 
     [Benchmark]
-    public LadybugCodeGraphStoreHealth ReopenAndCheckHealth()
+    public CodeGraphStoreHealth ReopenAndCheckHealth()
     {
         _store.Dispose();
         _store = new(_databasePath);
@@ -98,16 +95,5 @@ public class LadybugStoreBenchmarks
             new CodeFactOrigin(_repositoryId, _pluginId, "1.0.0", runId, new("unit:benchmark")),
             nodes,
             edges: edges);
-    }
-
-    private static void LoadWindowsOpenSsl(string fileName)
-    {
-        if (!OperatingSystem.IsWindows())
-            return;
-        var path = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "Git", "mingw64", "bin", fileName);
-        if (File.Exists(path))
-            NativeLibrary.Load(path);
     }
 }

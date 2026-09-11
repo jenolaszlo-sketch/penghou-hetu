@@ -216,6 +216,34 @@ public enum CodeGraphTruncationReason
     MaxEdges = 4
 }
 
+/// <summary>A bounded, deterministically ordered name-pattern match.</summary>
+/// <remarks>Matching is a case-insensitive ordinal substring search over qualified
+/// and display names. A future native full-text index may accelerate the scan
+/// without changing this contract.</remarks>
+public sealed record CodeNamePatternResult
+{
+    public const int DefaultMaxResults = 50;
+    public const int AbsoluteMaxResults = 200;
+
+    public CodeNamePatternResult(
+        IReadOnlyList<CodeGraphNode> candidates,
+        int totalMatches)
+    {
+        Candidates = candidates ?? throw new ArgumentNullException(nameof(candidates));
+        if (totalMatches < 0)
+            throw new ArgumentOutOfRangeException(nameof(totalMatches));
+        if (candidates.Count > totalMatches)
+            throw new ArgumentException(
+                "Candidates cannot exceed the total match count.",
+                nameof(candidates));
+        TotalMatches = totalMatches;
+    }
+
+    public IReadOnlyList<CodeGraphNode> Candidates { get; }
+    public int TotalMatches { get; }
+    public bool Truncated => TotalMatches > Candidates.Count;
+}
+
 /// <summary>A bounded, deterministically ordered graph traversal result.</summary>
 public sealed record CodeGraphTraversalResult
 {

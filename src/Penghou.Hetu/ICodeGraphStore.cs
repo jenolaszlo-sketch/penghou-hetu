@@ -93,6 +93,17 @@ public interface ICodeGraphReader
         string qualifiedName,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Finds up to <paramref name="maxResults"/> nodes whose qualified or display
+    /// name contains <paramref name="pattern"/> (ordinal, case-insensitive),
+    /// ordered by qualified name then node identity.
+    /// </summary>
+    ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
+        CodeRepositoryId repositoryId,
+        string pattern,
+        int maxResults = CodeNamePatternResult.DefaultMaxResults,
+        CancellationToken cancellationToken = default);
+
     ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(
         CodeRepositoryId repositoryId,
         CodeSymbolId symbolId,

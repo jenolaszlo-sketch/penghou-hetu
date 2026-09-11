@@ -72,7 +72,7 @@ public sealed class PublicApiContractTests
         {
             "Microsoft.CodeAnalysis",
             "Antlr",
-            "Ladybug",
+            "Lattice",
             "Kuzu",
             "Microsoft.Extensions.AI"
         };

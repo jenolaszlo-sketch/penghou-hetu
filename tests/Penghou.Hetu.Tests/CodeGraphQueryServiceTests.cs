@@ -345,6 +345,42 @@ public sealed class CodeGraphQueryServiceTests
         Assert.Equal(selected.Id.Value, provenance.FactId);
     }
 
+    [Fact]
+    public async Task NamePatternSearch_IsBoundedDeterministicAndValidated()
+    {
+        var store = new InMemoryCodeGraphStore();
+        var repositoryId = new CodeRepositoryId("repo:pattern");
+        var runId = new CodeIndexRunId("run:pattern");
+        var pluginId = new CodePluginId("plugin:pattern");
+        var started = DateTimeOffset.UtcNow;
+        await store.UpsertRepositoryAsync(new(repositoryId));
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        await store.StageIndexUnitAsync(new(
+            new(repositoryId, pluginId, "1.0.0", runId, new("unit:pattern")),
+            [Node("b", "Example.OrderService"), Node("a", "Example.Order"), Node("c", "Other.Unrelated")]));
+        await CompleteAsync(store, repositoryId, runId, pluginId, started);
+        var queries = new CodeGraphQueryService(store);
+
+        var result = await queries.FindNodesByNamePatternAsync(repositoryId, "order");
+
+        Assert.Equal(2, result.TotalMatches);
+        Assert.False(result.Truncated);
+        Assert.Equal(
+            ["Example.Order", "Example.OrderService"],
+            result.Candidates.Select(node => node.QualifiedName));
+
+        var bounded = await queries.FindNodesByNamePatternAsync(repositoryId, "example.", 1);
+
+        Assert.Equal(2, bounded.TotalMatches);
+        Assert.True(bounded.Truncated);
+        Assert.Equal("Example.Order", Assert.Single(bounded.Candidates).QualifiedName);
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await queries.FindNodesByNamePatternAsync(repositoryId, "  "));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await queries.FindNodesByNamePatternAsync(repositoryId, "order", 0));
+    }
+
     private static CodeGraphNode Node(string id, string name) => new(
         new CodeNodeId($"node:{id}"),
         CodeNodeKinds.Callable,

@@ -48,6 +48,7 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodePluginIndexingDiagnostics",
             "Penghou.Hetu.CodePluginIndexingStatus",
             "Penghou.Hetu.CodeIndexUnitReplacement",
+            "Penghou.Hetu.CodeNamePatternResult",
             "Penghou.Hetu.CodeRepositoryManifest",
             "Penghou.Hetu.CodeRepositoryDescriptor",
             "Penghou.Hetu.CodeRepositoryDiscoveryEventKind",

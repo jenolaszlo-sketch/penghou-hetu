@@ -144,6 +144,49 @@ public static class CodeGraphStoreConformanceSuite
             "declaration queries must trace every returned declaration");
         checks.Add("declaration-provenance");
 
+        var patternResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "shared",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            patternResult.TotalMatches == 1 &&
+            !patternResult.Truncated &&
+            patternResult.Candidates.Count == 1 &&
+            patternResult.Candidates[0].Id == shared.Id,
+            "name-pattern search must find the shared node by substring");
+        checks.Add("name-pattern-substring-search");
+        var caseResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "EXAMPLE.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            caseResult.TotalMatches == 3 && !caseResult.Truncated,
+            "name-pattern search must match case-insensitively");
+        checks.Add("name-pattern-case-insensitive");
+        var boundedResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "example.",
+            2,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            boundedResult.TotalMatches == 3 &&
+            boundedResult.Truncated &&
+            boundedResult.Candidates.Count == 2 &&
+            boundedResult.Candidates[0].QualifiedName == "Example.First" &&
+            boundedResult.Candidates[1].QualifiedName == "Example.Second",
+            "name-pattern search must be bounded and deterministically ordered");
+        checks.Add("name-pattern-bounded-deterministic");
+        var emptyResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "zzz-no-such-name",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            emptyResult.TotalMatches == 0 &&
+            !emptyResult.Truncated &&
+            emptyResult.Candidates.Count == 0,
+            "name-pattern search must report empty results explicitly");
+        checks.Add("name-pattern-empty-result");
+
         var updateRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
         var updateStartedAt = startedAt.AddSeconds(2);
         await store.StoreIndexRunAsync(

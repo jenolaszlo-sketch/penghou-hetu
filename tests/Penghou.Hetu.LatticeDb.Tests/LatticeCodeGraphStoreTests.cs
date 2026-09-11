@@ -1,22 +1,21 @@
+using LatticeDbSharp;
 using Penghou.Hetu.Testing;
-using System.Runtime.InteropServices;
-using LadybugDB;
 
-namespace Penghou.Hetu.Ladybug.Tests;
+namespace Penghou.Hetu.LatticeDb.Tests;
 
-public sealed class LadybugCodeGraphStoreTests
+public sealed class LatticeCodeGraphStoreTests
 {
     [Fact]
     public void PublicApi_IsIntentional()
     {
         Assert.Equal(
             [
+                typeof(LatticeCodeGraphSchemaException),
+                typeof(LatticeCodeGraphStore),
                 typeof(HetuHostBuilderExtensions),
-                typeof(LadybugCodeGraphSchemaException),
-                typeof(LadybugCodeGraphStore),
-                typeof(LadybugCodeGraphStoreHealth)
+                typeof(LatticeDbStoreOptions)
             ],
-            typeof(LadybugCodeGraphStore).Assembly.GetExportedTypes()
+            typeof(LatticeCodeGraphStore).Assembly.GetExportedTypes()
                 .OrderBy(type => type.FullName, StringComparer.Ordinal));
     }
 
@@ -24,7 +23,6 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_PassesProviderConformanceSuite()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var fixture = new Fixture(path);
         try
         {
@@ -37,7 +35,7 @@ public sealed class LadybugCodeGraphStoreTests
             var health = await ((ICodeGraphStoreHealthCheck)fixture.Store)
                 .CheckHealthAsync();
             Assert.Equal(CodeGraphStoreHealthStatus.Healthy, health.Status);
-            Assert.Equal("ladybug", health.StoreName);
+            Assert.Equal("lattice", health.StoreName);
         }
         finally
         {
@@ -50,11 +48,10 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensDurableState()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:durable");
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
             {
                 await first.UpsertRepositoryAsync(new(
                     repositoryId,
@@ -62,7 +59,7 @@ public sealed class LadybugCodeGraphStoreTests
                     "repo://durable"));
             }
 
-            using var reopened = new LadybugCodeGraphStore(path);
+            using var reopened = new LatticeCodeGraphStore(path);
             var repository = await reopened.GetRepositoryAsync(repositoryId);
 
             Assert.NotNull(repository);
@@ -80,7 +77,6 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensCompletedRunIndexStateAndGraphFacts()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:full-reopen");
         var runId = new CodeIndexRunId("run:full-reopen");
         var pluginId = new CodePluginId("plugin:full-reopen");
@@ -93,7 +89,7 @@ public sealed class LadybugCodeGraphStoreTests
         var started = DateTimeOffset.UtcNow;
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
@@ -105,7 +101,7 @@ public sealed class LadybugCodeGraphStoreTests
                     new(repositoryId, runId, [new CodeSourceManifest(pluginId, "1.0.0", "src/Durable.cs", "sha256:durable")]));
             }
 
-            using var reopened = new LadybugCodeGraphStore(path);
+            using var reopened = new LatticeCodeGraphStore(path);
 
             var restoredNode = await reopened.GetNodeAsync(repositoryId, node.Id);
             Assert.NotNull(restoredNode);
@@ -126,21 +122,20 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensHistoricalAndLatestCompletedRuns()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:completed-history");
         var firstRunId = new CodeIndexRunId("run:completed-history:first");
         var secondRunId = new CodeIndexRunId("run:completed-history:second");
         var started = DateTimeOffset.UtcNow;
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await CompleteAsync(first, firstRunId, started);
                 await CompleteAsync(first, secondRunId, started.AddSeconds(2));
             }
 
-            using var reopened = new LadybugCodeGraphStore(path);
+            using var reopened = new LatticeCodeGraphStore(path);
 
             Assert.Equal(
                 CodeIndexRunStatus.Completed,
@@ -158,7 +153,7 @@ public sealed class LadybugCodeGraphStoreTests
         }
 
         async Task CompleteAsync(
-            LadybugCodeGraphStore store,
+            LatticeCodeGraphStore store,
             CodeIndexRunId runId,
             DateTimeOffset runStarted)
         {
@@ -181,7 +176,6 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_ReopensStagedRunWithoutPublishingItAndCanResumePublication()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:staged-reopen");
         var runId = new CodeIndexRunId("run:staged-reopen");
         var pluginId = new CodePluginId("plugin:staged-reopen");
@@ -192,7 +186,7 @@ public sealed class LadybugCodeGraphStoreTests
         var started = DateTimeOffset.UtcNow;
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
@@ -202,7 +196,7 @@ public sealed class LadybugCodeGraphStoreTests
                 Assert.Null(await first.GetNodeAsync(repositoryId, node.Id));
             }
 
-            using var reopened = new LadybugCodeGraphStore(path);
+            using var reopened = new LatticeCodeGraphStore(path);
             Assert.Null(await reopened.GetNodeAsync(repositoryId, node.Id));
             await reopened.CompleteIndexRunAsync(
                 new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
@@ -219,19 +213,25 @@ public sealed class LadybugCodeGraphStoreTests
     public void Store_RejectsIncompatibleSchemaVersion()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         try
         {
-            using (var database = new Database(path))
-            using (var connection = new Connection(database))
+            using (var store = new LatticeCodeGraphStore(path))
             {
-                connection.Query("MATCH (s:HetuMetadata) SET s.schemaVersion = 999").Dispose();
             }
 
-            var exception = Assert.Throws<LadybugCodeGraphSchemaException>(
-                () => new LadybugCodeGraphStore(path));
+            using (var database = LatticeDatabase.Open(path, new LatticeDatabaseOptions { Create = false }))
+            using (var txn = database.BeginWriteTransaction())
+            {
+                using var query = database.Prepare("MATCH (s:HetuMetadata) SET s.schemaVersion = 999");
+                using var result = query.Execute(txn);
+                result.ReadAll();
+                txn.Commit();
+            }
+
+            var exception = Assert.Throws<LatticeCodeGraphSchemaException>(
+                () => new LatticeCodeGraphStore(path));
             Assert.Equal(999, exception.ActualVersion);
-            Assert.Equal(LadybugCodeGraphStore.CurrentSchemaVersion, exception.ExpectedVersion);
+            Assert.Equal(LatticeCodeGraphStore.CurrentSchemaVersion, exception.ExpectedVersion);
         }
         finally
         {
@@ -243,18 +243,20 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_RejectsCorruptedDurablePayloadOnReopen()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
                 await first.UpsertRepositoryAsync(new(new CodeRepositoryId("repo:corrupt")));
-            using (var database = new Database(path))
-            using (var connection = new Connection(database))
+            using (var database = LatticeDatabase.Open(path, new LatticeDatabaseOptions { Create = false }))
+            using (var txn = database.BeginWriteTransaction())
             {
-                connection.Query("MATCH (s:HetuRepository) SET s.payload = 'not-base64'").Dispose();
+                using var query = database.Prepare("MATCH (s:HetuRepository) SET s.payload = 'not-base64'");
+                using var result = query.Execute(txn);
+                result.ReadAll();
+                txn.Commit();
             }
 
-            Assert.Throws<FormatException>(() => new LadybugCodeGraphStore(path));
+            Assert.Throws<FormatException>(() => new LatticeCodeGraphStore(path));
         }
         finally
         {
@@ -266,7 +268,6 @@ public sealed class LadybugCodeGraphStoreTests
     public async Task Store_RollsBackInterruptedNativeTransactionAndReopensPriorUnit()
     {
         var path = TemporaryDatabasePath();
-        EnsureNativeRuntime(path);
         var repositoryId = new CodeRepositoryId("repo:rollback");
         var runId = new CodeIndexRunId("run:rollback");
         var updateRunId = new CodeIndexRunId("run:rollback:update");
@@ -276,7 +277,7 @@ public sealed class LadybugCodeGraphStoreTests
         var replacement = new CodeGraphNode(new("node:replacement"), CodeNodeKinds.Type, "Replacement");
         try
         {
-            using (var first = new LadybugCodeGraphStore(path))
+            using (var first = new LatticeCodeGraphStore(path))
             {
                 await first.UpsertRepositoryAsync(new(repositoryId));
                 await first.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
@@ -291,8 +292,9 @@ public sealed class LadybugCodeGraphStoreTests
                     plugins: [pluginId]));
             }
             var failCommit = false;
-            using (var interrupted = new LadybugCodeGraphStore(
+            using (var interrupted = new LatticeCodeGraphStore(
                        path,
+                       null,
                        point =>
                        {
                            if (failCommit && point == "before-commit")
@@ -315,7 +317,7 @@ public sealed class LadybugCodeGraphStoreTests
                         new(repositoryId, updateRunId, [])));
             }
 
-            using var reopened = new LadybugCodeGraphStore(path);
+            using var reopened = new LatticeCodeGraphStore(path);
             Assert.NotNull(await reopened.GetNodeAsync(repositoryId, prior.Id));
             Assert.Null(await reopened.GetNodeAsync(repositoryId, replacement.Id));
         }
@@ -332,15 +334,21 @@ public sealed class LadybugCodeGraphStoreTests
     }
 
     private static string TemporaryDatabasePath() =>
-        Path.Combine(Path.GetTempPath(), $"hetu-ladybug-{Guid.NewGuid():N}");
+        Path.Combine(Path.GetTempPath(), $"hetu-lattice-{Guid.NewGuid():N}.ltdb");
 
-    private static void EnsureNativeRuntime(string path)
+    [Fact]
+    public async Task Store_OpensAsyncAndHonorsCancellation()
     {
-        LoadWindowsOpenSslDependency("libcrypto-3-x64.dll");
-        LoadWindowsOpenSslDependency("libssl-3-x64.dll");
+        var path = TemporaryDatabasePath();
         try
         {
-            using var store = new LadybugCodeGraphStore(path);
+            using var store = await LatticeCodeGraphStore.OpenAsync(path);
+            Assert.True(store.CheckHealth().IsHealthy);
+
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await LatticeCodeGraphStore.OpenAsync(path, cancelled.Token));
         }
         finally
         {
@@ -348,29 +356,156 @@ public sealed class LadybugCodeGraphStoreTests
         }
     }
 
-    private static void LoadWindowsOpenSslDependency(string fileName)
+    [Fact]
+    public async Task Store_AcceptsTuningOptions()
     {
-        if (!OperatingSystem.IsWindows())
-            return;
-        var candidate = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "Git",
-            "mingw64",
-            "bin",
-            fileName);
-        if (File.Exists(candidate))
-            NativeLibrary.Load(candidate);
+        var path = TemporaryDatabasePath();
+        try
+        {
+            using var store = new LatticeCodeGraphStore(
+                path,
+                new LatticeDbStoreOptions { CacheSizeMb = 32, EnableWal = true });
+            await store.UpsertRepositoryAsync(new(new CodeRepositoryId("repo:options")));
+            Assert.True(store.CheckHealth().IsHealthy);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Host_UseLatticeStoreBuildsHealthyHost()
+    {
+        var path = TemporaryDatabasePath();
+        try
+        {
+            await using var host = new HetuHostBuilder()
+                .UseLatticeStore(path)
+                .Build();
+            var health = await host.CheckHealthAsync();
+            Assert.True(health.IsReady);
+            Assert.Equal("lattice", health.Store.StoreName);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public void Store_RejectsSecondOwnerOfSameFile()
+    {
+        var path = TemporaryDatabasePath();
+        try
+        {
+            using var first = new LatticeCodeGraphStore(path);
+            Assert.Throws<LatticeException>(() => new LatticeCodeGraphStore(path));
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Store_ReportsUnhealthyAfterDispose()
+    {
+        var path = TemporaryDatabasePath();
+        var store = new LatticeCodeGraphStore(path);
+        try
+        {
+            Assert.True(store.CheckHealth().IsHealthy);
+        }
+        finally
+        {
+            store.Dispose();
+            DeleteDatabase(path);
+        }
+
+        var health = await ((ICodeGraphStoreHealthCheck)store).CheckHealthAsync();
+        Assert.Equal(CodeGraphStoreHealthStatus.Unhealthy, health.Status);
+        Assert.Equal("lattice", health.StoreName);
+        Assert.NotNull(health.Detail);
+    }
+
+    [Fact]
+    public async Task Store_IsolatesMultipleRepositories()
+    {
+        var path = TemporaryDatabasePath();
+        var firstRepository = new CodeRepositoryId("repo:first");
+        var secondRepository = new CodeRepositoryId("repo:second");
+        var started = DateTimeOffset.UtcNow;
+        try
+        {
+            using (var first = new LatticeCodeGraphStore(path))
+            {
+                foreach (var repository in new[] { firstRepository, secondRepository })
+                {
+                    var runId = new CodeIndexRunId($"run:{repository.Value}");
+                    await first.UpsertRepositoryAsync(new(repository));
+                    await first.StoreIndexRunAsync(new(repository, runId, started));
+                    await first.CompleteIndexRunAsync(
+                        new(repository, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1)),
+                        new(repository, runId, []));
+                }
+            }
+
+            using var reopened = new LatticeCodeGraphStore(path);
+            foreach (var repository in new[] { firstRepository, secondRepository })
+            {
+                var state = await reopened.GetLatestIndexStateAsync(repository);
+                Assert.NotNull(state);
+                Assert.Equal($"run:{repository.Value}", state.IndexRunId.Value);
+                var publication = await reopened.GetLatestPublicationAsync(repository);
+                Assert.NotNull(publication);
+                Assert.Equal(state.IndexRunId, publication.IndexRunId);
+            }
+            Assert.Equal(2, reopened.CheckHealth().RepositoryCount);
+            Assert.Equal(2, reopened.CheckHealth().RunCount);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
     }
 
     private static void DeleteDatabase(string path)
     {
-        if (Directory.Exists(path))
-            Directory.Delete(path, recursive: true);
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+        }
+
+        foreach (var suffix in new[] { "-wal", "-journal", ".wal" })
+        {
+            try
+            {
+                if (File.Exists(path + suffix))
+                    File.Delete(path + suffix);
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+        }
     }
 
     private sealed class Fixture(string path) : ICodeGraphStoreFixture
     {
-        public LadybugCodeGraphStore? Store { get; private set; }
+        public LatticeCodeGraphStore? Store { get; private set; }
 
         public ICodeGraphStore CreateStore() => Store = new(path);
     }
