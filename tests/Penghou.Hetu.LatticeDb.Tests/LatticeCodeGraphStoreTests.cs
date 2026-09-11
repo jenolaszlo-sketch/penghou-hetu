@@ -29,6 +29,7 @@ public sealed class LatticeCodeGraphStoreTests
             var report = await CodeGraphStoreConformanceSuite.VerifyAsync(fixture);
 
             Assert.Contains("bounded-deterministic-traversal", report.PassedChecks);
+            Assert.Contains("traversal-relationship-kind-filter", report.PassedChecks);
             Assert.Contains("successful-source-state-round-trip", report.PassedChecks);
             Assert.Contains("latest-publication-round-trip", report.PassedChecks);
             Assert.True(fixture.Store!.CheckHealth().IsHealthy);

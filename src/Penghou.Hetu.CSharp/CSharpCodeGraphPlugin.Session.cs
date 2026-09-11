@@ -34,7 +34,8 @@ public sealed partial class CSharpCodeGraphPlugin
                     await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
             }
 
-            var projects = CSharpProjectDiscovery.Discover(content);
+            var discovery = CSharpProjectDiscovery.Discover(content);
+            var projects = discovery.Projects;
             var projectByPath = projects.ToDictionary(
                 project => project.Path,
                 StringComparer.OrdinalIgnoreCase);
@@ -42,6 +43,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 StringComparer.OrdinalIgnoreCase);
             var allDiagnostics = new List<Diagnostic>();
             var warningCodes = new HashSet<string>(StringComparer.Ordinal);
+            warningCodes.UnionWith(discovery.Warnings);
             var contributingSources = new HashSet<string>(StringComparer.Ordinal);
             var runSymbols = new RunSymbols();
             var relationshipTotals = new Dictionary<string, RelationshipCounters>(

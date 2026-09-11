@@ -63,6 +63,31 @@ public sealed partial class CSharpCodeGraphPlugin
                     ProjectNodeId(reference),
                     ProjectLocation());
             }
+            // Package references are syntax facts from the project file: no
+            // MSBuild evaluation, no transitive closure, no version guessing.
+            foreach (var package in project.PackageReferences)
+            {
+                var packageId = NodeId("package", $"nuget:{package.Name}\n{package.Version}");
+                _nodes.TryAdd(
+                    packageId.Value,
+                    new CodeGraphNode(
+                        packageId,
+                        CodeNodeKinds.Package,
+                        package.Name,
+                        $"nuget:{package.Name}",
+                        properties: new Dictionary<string, CodePropertyValue>
+                        {
+                            ["package-version"] = new CodeTextProperty(package.Version ?? string.Empty),
+                            ["package-condition"] = new CodeTextProperty(package.Condition ?? string.Empty)
+                        }));
+                AddEdge(
+                    CodeEdgeKinds.DependsOn,
+                    id,
+                    packageId,
+                    ProjectLocation(),
+                    discriminator: $"package:{package.Name}",
+                    evidenceKind: CodeEvidenceKind.Syntax);
+            }
         }
 
         public void AddFile(CodeGraphSource source)
@@ -462,7 +487,8 @@ public sealed partial class CSharpCodeGraphPlugin
             CodeNodeId source,
             CodeNodeId target,
             CodeLocation location,
-            string? discriminator = null)
+            string? discriminator = null,
+            CodeEvidenceKind evidenceKind = CodeEvidenceKind.Semantic)
         {
             var id = new CodeEdgeId(
                 $"csharp:{Hash($"{kind.Value}\n{source.Value}\n{target.Value}\n{discriminator}")}");
@@ -472,7 +498,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 target,
                 kind,
                 new CodeEvidence(
-                    CodeEvidenceKind.Semantic,
+                    evidenceKind,
                     plugin.Id.Value,
                     plugin.Version,
                     location));

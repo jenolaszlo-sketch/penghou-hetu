@@ -199,13 +199,22 @@ plugin reports stable Roslyn diagnostic codes rather than compiler messages or
 source content.
 
 Project discovery supports default compile items, explicit compile includes and
-removals, linked sources, common compiler properties, and project references.
+removals, linked sources, common compiler properties, project references, and
+`PackageReference` items. Package references become bounded syntax-evidence
+`package` nodes with verbatim version and unexpanded condition metadata, linked
+by `depends-on` edges; conditions are never evaluated and missing versions are
+never guessed. More than 256 package references in one project keep the first
+256 in name order and report `csharp.project.package-cap`.
 Sources outside project directories fall into a deterministic loose-source
 project. Project-reference compilations and `depends-on` edges are created in
 dependency order, while missing and cyclic references are diagnosed rather
-than guessed. This deliberately lightweight model does not evaluate MSBuild
-conditions, imports, custom targets, or solution configurations; full MSBuild
-evaluation remains a future opt-in provider concern.
+than guessed. When `.sln` files are present, the union of their listed projects
+forms the canonical set: unlisted projects are skipped with
+`csharp.solution.unlisted-project` and listed-but-absent projects report
+`csharp.solution.missing-project`. Solution configurations are not evaluated.
+This deliberately lightweight model does not evaluate MSBuild conditions,
+imports, or custom targets; full MSBuild evaluation remains a future opt-in
+provider concern.
 
 The plugin version comes from its package informational version, so package
 updates naturally invalidate prior source manifests. Unresolved relationship
