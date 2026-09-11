@@ -229,6 +229,28 @@ public sealed class CodeIndexingService
                 item.Manifest.PluginId == plugin.Id &&
                 item.Status != CodeIndexPlanStatus.Unchanged))
             .ToArray();
+        if (executingPlugins.Length == 0 && previousState is not null)
+        {
+            // Nothing changed: reuse the existing publication instead of
+            // minting a run that would supersede concurrent runs for no
+            // content change.
+            var unchanged = CreateDiagnostics(
+                descriptor.Id, runId, CodeIndexRunStatus.Completed, plan, ingestion,
+                0, 0, plan.HashBytesRead,
+                planningDuration, TimeSpan.Zero, TimeSpan.Zero,
+                pluginDiagnostics);
+            Report(diagnostics, unchanged);
+            return new(
+                plan,
+                unchanged,
+                new CodeGraphPublication(
+                    previousState.RepositoryId,
+                    previousState.IndexRunId,
+                    previousState.SnapshotIdentity,
+                    previousState.IsConsistentSnapshot,
+                    previousState.IndexIdentity),
+                previousState);
+        }
         var running = new CodeIndexRunManifest(
             descriptor.Id,
             runId,

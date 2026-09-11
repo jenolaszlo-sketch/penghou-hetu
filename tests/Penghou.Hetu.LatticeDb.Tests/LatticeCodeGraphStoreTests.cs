@@ -122,6 +122,45 @@ public sealed class LatticeCodeGraphStoreTests
     }
 
     [Fact]
+    public async Task Store_ResumedRunConflictsAfterNewerPublication()
+    {
+        var path = TemporaryDatabasePath();
+        var repositoryId = new CodeRepositoryId("repo:ordering");
+        var pluginId = new CodePluginId("plugin:ordering");
+        var started = DateTimeOffset.UtcNow;
+        var firstRun = new CodeIndexRunId("run:one");
+        var staleRun = new CodeIndexRunId("run:stale");
+        try
+        {
+            using (var first = new LatticeCodeGraphStore(path))
+            {
+                await first.UpsertRepositoryAsync(new(repositoryId));
+                await first.StoreIndexRunAsync(new(repositoryId, firstRun, started, plugins: [pluginId]));
+                await first.CompleteIndexRunAsync(
+                    new(repositoryId, firstRun, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+                    new(repositoryId, firstRun, []));
+                await first.StoreIndexRunAsync(new(repositoryId, staleRun, started.AddSeconds(2), plugins: [pluginId]));
+            }
+
+            using var reopened = new LatticeCodeGraphStore(path);
+            var nextRun = new CodeIndexRunId("run:two");
+            await reopened.StoreIndexRunAsync(new(repositoryId, nextRun, started.AddSeconds(3), plugins: [pluginId]));
+            await reopened.CompleteIndexRunAsync(
+                new(repositoryId, nextRun, started.AddSeconds(3), CodeIndexRunStatus.Completed, started.AddSeconds(4), [pluginId]),
+                new(repositoryId, nextRun, []));
+            // The pre-restart baseline survived the reopen: the stale run
+            // still conflicts instead of silently winning.
+            await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.CompleteIndexRunAsync(
+                new(repositoryId, staleRun, started.AddSeconds(2), CodeIndexRunStatus.Completed, started.AddSeconds(5), [pluginId]),
+                new(repositoryId, staleRun, [])).AsTask());
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
     public async Task Store_ReopensHistoricalAndLatestCompletedRuns()
     {
         var path = TemporaryDatabasePath();

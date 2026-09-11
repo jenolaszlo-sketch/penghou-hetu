@@ -127,8 +127,8 @@ public sealed class CodeIndexingServiceTests
         Assert.Equal(Encoding.UTF8.GetByteCount("content"), second.Diagnostics.SourceBytesRead);
         Assert.Equal(3, provider.OpenCount);
         Assert.Equal(1, second.Diagnostics.FilesUnchanged);
-        Assert.Equal("run:second", second.Publication.IndexRunId.Value);
-        Assert.Equal(first.Publication.IndexIdentity, second.Publication.IndexIdentity);
+        Assert.Equal("run:first", second.Publication.IndexRunId.Value);
+        Assert.Equal(first.Publication, second.Publication);
         Assert.Equal(
             (await store.GetLatestIndexStateAsync(descriptor.Id))!.IndexIdentity,
             second.Publication.IndexIdentity);
@@ -293,6 +293,23 @@ public sealed class CodeIndexingServiceTests
         // The published graph still serves the original publication.
         Assert.Equal(new CodeIndexRunId("run:first"), (await store.GetLatestPublicationAsync(descriptor.Id))!.IndexRunId);
         Assert.NotNull(await store.GetNodeAsync(descriptor.Id, new("node:example")));
+    }
+
+    [Fact]
+    public async Task IndexAsync_ReusesPublicationWhenNothingChanged()
+    {
+        var files = new Dictionary<string, string> { ["src/Example.cs"] = "class Example {}" };
+        var plugin = new LifecyclePlugin();
+        var store = new InMemoryCodeGraphStore();
+        var service = Service(new MemoryProvider(files), plugin, store);
+        var descriptor = new CodeRepositoryDescriptor(new("repo:test"), "memory://test");
+
+        var first = await service.IndexAsync(descriptor, new("run:first"));
+        var second = await service.IndexAsync(descriptor, new("run:second"));
+
+        Assert.Equal(first.Publication, second.Publication);
+        Assert.Equal(first.PublishedState, second.PublishedState);
+        Assert.Equal(1, plugin.ExecutionCount);
     }
 
     private static CodeIndexingService Service(

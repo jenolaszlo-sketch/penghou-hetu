@@ -303,9 +303,20 @@ public sealed class InMemoryCodeGraphStore :
     }
 
     /// <summary>
-    /// Re-anchors every running run to the restored publication. Replay
-    /// registers runs before restoring publications, so without this every
-    /// resumed run would look superseded.
+    /// Restores one persisted ordering baseline verbatim. Rows written by
+    /// newer binaries win over the gap-fill below.
+    /// </summary>
+    internal void RestoreBaseline(string repositoryId, string runId, string? baseline)
+    {
+        lock (_gate)
+            _runBaselines[new RunKey(repositoryId, runId)] = baseline;
+    }
+
+    /// <summary>
+    /// Anchors running runs that have no persisted baseline (pre-upgrade
+    /// databases) to the restored publication. Replay registers runs before
+    /// restoring publications, so without this every resumed run would look
+    /// superseded.
     /// </summary>
     internal void RebaseRunningRuns()
     {
@@ -313,7 +324,8 @@ public sealed class InMemoryCodeGraphStore :
         {
             foreach (var (key, run) in _runs)
             {
-                if (run.Status != CodeIndexRunStatus.Running)
+                if (run.Status != CodeIndexRunStatus.Running ||
+                    _runBaselines.ContainsKey(key))
                     continue;
                 _runBaselines[key] = _indexStates.TryGetValue(run.RepositoryId.Value, out var state)
                     ? state.IndexRunId.Value
@@ -364,6 +376,15 @@ public sealed class InMemoryCodeGraphStore :
                 pluginId.Value,
                 indexUnitId.Value);
             cancellationToken.ThrowIfCancellationRequested();
+            var prospective = ApplyStagedChanges(runKey);
+            prospective.Remove(owner);
+            var errors = ValidateMaterializedGraph(repositoryId, prospective);
+            if (errors.Count > 0)
+            {
+                throw new CodeGraphBatchRejectedException(
+                    "The staged index-unit deletion would violate graph invariants.",
+                    errors);
+            }
             var staged = GetOrCreateStagedRun(runKey);
             staged.Replacements.Remove(owner);
             staged.Deletions.Add(owner);
@@ -380,11 +401,10 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(nodeId);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            var graph = Materialize(repositoryId);
-            return new(graph.Nodes.GetValueOrDefault(nodeId.Value));
-        }
+            graph = Materialize(repositoryId);
+        return new(graph.Nodes.GetValueOrDefault(nodeId.Value));
     }
 
     public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
@@ -396,22 +416,24 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentException.ThrowIfNullOrWhiteSpace(qualifiedName);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
+        CodeGraphPublication publication;
         lock (_gate)
         {
-            if (!TryGetPublication(repositoryId, out var publication))
+            if (!TryGetPublication(repositoryId, out publication))
                 return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(null);
-            var graph = Materialize(repositoryId);
-            var nodes = graph.Nodes.Values
-                .Where(node => string.Equals(node.QualifiedName, qualifiedName, StringComparison.Ordinal))
-                .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
-                .ToArray();
-            return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(
-                new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>(
-                    publication,
-                    new("qualified-name", qualifiedName),
-                    nodes,
-                    ProvenanceForNodes(graph, nodes).ToArray()));
+            graph = Materialize(repositoryId);
         }
+        var nodes = graph.Nodes.Values
+            .Where(node => string.Equals(node.QualifiedName, qualifiedName, StringComparison.Ordinal))
+            .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
+            .ToArray();
+        return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>(
+            new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>(
+                publication,
+                new("qualified-name", qualifiedName),
+                nodes,
+                ProvenanceForNodes(graph, nodes).ToArray()));
     }
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
@@ -423,24 +445,26 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(query);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
+        CodeGraphPublication publication;
         lock (_gate)
         {
-            if (!TryGetPublication(repositoryId, out var publication))
+            if (!TryGetPublication(repositoryId, out publication))
                 return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(null);
-            var graph = Materialize(repositoryId);
-            var result = graph.Nodes.ContainsKey(query.StartNodeId.Value)
-                ? Traverse(graph, query, cancellationToken)
-                : new CodeGraphTraversalResult([], [], false);
-            var provenance = ProvenanceForNodes(graph, result.Nodes)
-                .Concat(ProvenanceForEdges(graph, result.Edges))
-                .ToArray();
-            return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(
-                new CodeGraphQueryEnvelope<CodeGraphTraversalResult>(
-                    publication,
-                    new("traversal", Traversal: query),
-                    result,
-                    provenance));
+            graph = Materialize(repositoryId);
         }
+        var result = graph.Nodes.ContainsKey(query.StartNodeId.Value)
+            ? Traverse(graph, query, cancellationToken)
+            : new CodeGraphTraversalResult([], [], false);
+        var provenance = ProvenanceForNodes(graph, result.Nodes)
+            .Concat(ProvenanceForEdges(graph, result.Edges))
+            .ToArray();
+        return ValueTask.FromResult<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>(
+            new CodeGraphQueryEnvelope<CodeGraphTraversalResult>(
+                publication,
+                new("traversal", Traversal: query),
+                result,
+                provenance));
     }
 
     public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>
@@ -452,29 +476,31 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(symbolId);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
+        CodeGraphPublication publication;
         lock (_gate)
         {
-            if (!TryGetPublication(repositoryId, out var publication))
+            if (!TryGetPublication(repositoryId, out publication))
                 return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(null);
-            var graph = Materialize(repositoryId);
-            var declarations = graph.Declarations.Values
-                .Where(declaration => declaration.SymbolId == symbolId)
-                .OrderBy(declaration => declaration.Location.Path, StringComparer.Ordinal)
-                .ThenBy(declaration => declaration.Location.StartLine)
-                .ThenBy(declaration => declaration.Location.StartColumn)
-                .ThenBy(declaration => declaration.Id.Value, StringComparer.Ordinal)
-                .ToArray();
-            var provenance = declarations.Select(declaration => new CodeGraphFactProvenance(
-                CodeGraphFactKind.Declaration,
-                declaration.Id.Value,
-                graph.DeclarationOrigins.GetValueOrDefault(declaration.Id.Value) ?? [])).ToArray();
-            return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(
-                new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>(
-                    publication,
-                    new("declarations"),
-                    declarations,
-                    provenance));
+            graph = Materialize(repositoryId);
         }
+        var declarations = graph.Declarations.Values
+            .Where(declaration => declaration.SymbolId == symbolId)
+            .OrderBy(declaration => declaration.Location.Path, StringComparer.Ordinal)
+            .ThenBy(declaration => declaration.Location.StartLine)
+            .ThenBy(declaration => declaration.Location.StartColumn)
+            .ThenBy(declaration => declaration.Id.Value, StringComparer.Ordinal)
+            .ToArray();
+        var provenance = declarations.Select(declaration => new CodeGraphFactProvenance(
+            CodeGraphFactKind.Declaration,
+            declaration.Id.Value,
+            graph.DeclarationOrigins.GetValueOrDefault(declaration.Id.Value) ?? [])).ToArray();
+        return ValueTask.FromResult<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?>(
+            new CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>(
+                publication,
+                new("declarations"),
+                declarations,
+                provenance));
     }
 
     public ValueTask<CodeGraphNode?> FindSymbolAsync(
@@ -485,14 +511,14 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(symbolId);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            var node = Materialize(repositoryId).Nodes.Values
-                .Where(node => node.SymbolId == symbolId)
-                .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
-                .FirstOrDefault();
-            return new(node);
-        }
+            graph = Materialize(repositoryId);
+        var node = graph.Nodes.Values
+            .Where(candidate => candidate.SymbolId == symbolId)
+            .OrderBy(candidate => candidate.Id.Value, StringComparer.Ordinal)
+            .FirstOrDefault();
+        return new(node);
     }
 
     public ValueTask<IReadOnlyList<CodeGraphNode>> FindNodesByQualifiedNameAsync(
@@ -503,16 +529,16 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentException.ThrowIfNullOrWhiteSpace(qualifiedName);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            return new(Materialize(repositoryId).Nodes.Values
-                .Where(node => string.Equals(
-                    node.QualifiedName,
-                    qualifiedName,
-                    StringComparison.Ordinal))
-                .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
-                .ToArray());
-        }
+            graph = Materialize(repositoryId);
+        return new(graph.Nodes.Values
+            .Where(node => string.Equals(
+                node.QualifiedName,
+                qualifiedName,
+                StringComparison.Ordinal))
+            .OrderBy(node => node.Id.Value, StringComparer.Ordinal)
+            .ToArray());
     }
 
     public ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
@@ -526,17 +552,17 @@ public sealed class InMemoryCodeGraphStore :
         if (maxResults < 1 || maxResults > CodeNamePatternResult.AbsoluteMaxResults)
             throw new ArgumentOutOfRangeException(nameof(maxResults));
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            var matches = Materialize(repositoryId).Nodes.Values
-                .Where(node => MatchesNamePattern(node, pattern))
-                .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
-                .ThenBy(node => node.Id.Value, StringComparer.Ordinal)
-                .ToArray();
-            return new(new CodeNamePatternResult(
-                matches.Take(maxResults).ToArray(),
-                matches.Length));
-        }
+            graph = Materialize(repositoryId);
+        var matches = graph.Nodes.Values
+            .Where(node => MatchesNamePattern(node, pattern))
+            .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
+            .ThenBy(node => node.Id.Value, StringComparer.Ordinal)
+            .ToArray();
+        return new(new CodeNamePatternResult(
+            matches.Take(maxResults).ToArray(),
+            matches.Length));
     }
 
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(
@@ -547,16 +573,16 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(symbolId);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            return new(Materialize(repositoryId).Declarations.Values
-                .Where(declaration => declaration.SymbolId == symbolId)
-                .OrderBy(declaration => declaration.Location.Path, StringComparer.Ordinal)
-                .ThenBy(declaration => declaration.Location.StartLine)
-                .ThenBy(declaration => declaration.Location.StartColumn)
-                .ThenBy(declaration => declaration.Id.Value, StringComparer.Ordinal)
-                .ToArray());
-        }
+            graph = Materialize(repositoryId);
+        return new(graph.Declarations.Values
+            .Where(declaration => declaration.SymbolId == symbolId)
+            .OrderBy(declaration => declaration.Location.Path, StringComparer.Ordinal)
+            .ThenBy(declaration => declaration.Location.StartLine)
+            .ThenBy(declaration => declaration.Location.StartColumn)
+            .ThenBy(declaration => declaration.Id.Value, StringComparer.Ordinal)
+            .ToArray());
     }
 
     public ValueTask<CodeGraphTraversalResult> TraverseAsync(
@@ -567,14 +593,13 @@ public sealed class InMemoryCodeGraphStore :
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(query);
         cancellationToken.ThrowIfCancellationRequested();
+        MaterializedGraph graph;
         lock (_gate)
-        {
-            var graph = Materialize(repositoryId);
-            if (!graph.Nodes.ContainsKey(query.StartNodeId.Value))
-                return new(new CodeGraphTraversalResult([], [], false));
+            graph = Materialize(repositoryId);
+        if (!graph.Nodes.ContainsKey(query.StartNodeId.Value))
+            return new(new CodeGraphTraversalResult([], [], false));
 
-            return new(Traverse(graph, query, cancellationToken));
-        }
+        return new(Traverse(graph, query, cancellationToken));
     }
 
     private void EnsureKnownOwnership(CodeFactOrigin origin)

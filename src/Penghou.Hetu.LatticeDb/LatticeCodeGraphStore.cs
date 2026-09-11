@@ -43,6 +43,7 @@ public sealed class LatticeCodeGraphStore :
     private const string IndexStateLabel = "HetuIndexState";
     private const string UnitLabel = "HetuUnit";
     private const string StageLabel = "HetuStage";
+    private const string BaselineLabel = "HetuBaseline";
     private const string SchemaKey = "schema";
 
     private readonly LatticeDatabase _database;
@@ -81,6 +82,16 @@ public sealed class LatticeCodeGraphStore :
             var states = ReadTable<CodeRepositoryIndexState>(IndexStateLabel);
             _commands = Reconstruct(repositories, runs, units, stages, states);
             _inner = ReplayAsync(_commands, CancellationToken.None).GetAwaiter().GetResult();
+            foreach (var (key, baseline) in ReadPairs(BaselineLabel))
+            {
+                var separator = key.IndexOf('\n');
+                if (separator <= 0 || separator == key.Length - 1)
+                    throw new InvalidDataException($"Lattice {BaselineLabel} key is invalid.");
+                _inner.RestoreBaseline(
+                    key[..separator],
+                    key[(separator + 1)..],
+                    string.IsNullOrEmpty(baseline) ? null : baseline);
+            }
         }
         catch
         {
@@ -202,6 +213,10 @@ public sealed class LatticeCodeGraphStore :
         {
             return new(CheckHealth());
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             return new(new CodeGraphStoreHealth(
@@ -226,11 +241,15 @@ public sealed class LatticeCodeGraphStore :
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var baseline = command is { Kind: "run", Run.Status: CodeIndexRunStatus.Running }
+                ? (await _inner.GetLatestPublicationAsync(command.Run.RepositoryId, cancellationToken)
+                    .ConfigureAwait(false))?.IndexRunId.Value
+                : null;
             var next = Apply(_commands, command);
             await ApplyCommandAsync(_inner, command, cancellationToken).ConfigureAwait(false);
             try
             {
-                Persist(command, cancellationToken);
+                Persist(command, baseline, cancellationToken);
                 _commands = next;
             }
             catch
@@ -245,7 +264,7 @@ public sealed class LatticeCodeGraphStore :
         }
     }
 
-    private void Persist(PersistedCommand command, CancellationToken cancellationToken)
+    private void Persist(PersistedCommand command, string? baseline, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var txn = _database.BeginWriteTransaction();
@@ -259,12 +278,20 @@ public sealed class LatticeCodeGraphStore :
                 case "run":
                     Upsert(txn, RunLabel, RunKey(command.Run!), Serialize(command.Run));
                     if (command.Run!.Status != CodeIndexRunStatus.Running)
+                    {
                         DeleteStagedRun(txn, command.Run);
+                        DeleteMany(txn, BaselineLabel, [RunKey(command.Run)]);
+                    }
+                    else
+                    {
+                        Upsert(txn, BaselineLabel, RunKey(command.Run), baseline ?? string.Empty);
+                    }
                     break;
                 case "complete":
                     PublishStagedRun(txn, command.Run!);
                     Upsert(txn, RunLabel, RunKey(command.Run!), Serialize(command.Run));
                     Upsert(txn, IndexStateLabel, command.State!.RepositoryId.Value, Serialize(command.State));
+                    DeleteMany(txn, BaselineLabel, [RunKey(command.Run!)]);
                     break;
                 case "stage-replace":
                 case "stage-delete":
@@ -386,6 +413,22 @@ public sealed class LatticeCodeGraphStore :
     }
 
     private int ReadSchemaVersion() => ReadMetadata() ?? CurrentSchemaVersion;
+
+    private List<(string Key, string Payload)> ReadPairs(string label)
+    {
+        IReadOnlyList<LatticeRow> rows;
+        using (var txn = _database.BeginReadTransaction())
+        {
+            using var query = _database.Prepare($"MATCH (s:{label}) RETURN s.key, s.payload");
+            using var result = query.Execute(txn);
+            rows = result.ReadAll();
+            txn.Commit();
+        }
+        return rows
+            .Select(row => (row.GetValue(0).AsString(), row.GetValue(1).AsString()))
+            .OrderBy(pair => pair.Item1, StringComparer.Ordinal)
+            .ToList();
+    }
 
     private List<T> ReadTable<T>(string label)
     {
