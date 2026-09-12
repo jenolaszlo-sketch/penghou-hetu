@@ -21,7 +21,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore Penghou.Hetu.slnx
       - name: Run benchmarks
-        run: dotnet run -c Release --no-restore --project benchmarks/Penghou.Hetu.Benchmarks -- --job ${{ inputs.job }}
+        run: dotnet run -c Release --no-restore --project benchmarks/Penghou.Hetu.Benchmarks -- --job ${{ inputs.job }} --filter *LatticeStoreBenchmarks*
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

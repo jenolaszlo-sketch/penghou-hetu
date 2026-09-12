@@ -13,18 +13,18 @@ dotnet run -c Release --project benchmarks/Penghou.Hetu.Benchmarks -- --job shor
 
 ## LatticeDB schema 1 baseline (current)
 
-Measured on 2026-09-10 using LatticeDbSharp 0.1.0-preview.1, .NET 10.0.11,
+Measured on 2026-09-13 using LatticeDbSharp 0.1.1, .NET 10.0.11,
 Windows 11, and an Intel Core Ultra 5 125H, with a short smoke job
 (`--job short`; write operations show high variance across the 3 iterations).
 Results are local engineering baselines, not portable performance guarantees.
 
 | Operation | 100 nodes | 1,000 nodes |
 |---|---:|---:|
-| Replace index unit | 6.70 ms | 52.5 ms |
+| Replace index unit | 7.66 ms | 52.5 ms |
 | Exact qualified-name lookup | 0.0006 ms | 0.004 ms |
-| Bounded traversal | 0.006 ms | 0.007 ms |
-| Delete and reinsert unit | 8.44 ms | 58.0 ms |
-| Reopen and health check | 28.3 ms | 85.8 ms |
+| Bounded traversal | 0.006 ms | 0.006 ms |
+| Delete and reinsert unit | 9.43 ms | 55.2 ms |
+| Reopen and health check | 38.7 ms | 89.9 ms |
 
 The fixture uses a chain graph with one fewer edge than nodes. Traversal starts
 at the middle node and is fixed at depth 4, 25 nodes, and 50 edges. Lookups and
@@ -33,6 +33,16 @@ they stay flat as the stored unit grows. Writes remain approximately linear
 because unit replacement transactionally persists owned command-log records.
 Reopen cost is dominated by full log replay and JSON deserialization; promoting
 facts to native graph storage would remove that ceiling.
+
+## LatticeDB schema 1 baseline (2026-09-10, LatticeDbSharp 0.1.0-preview.1)
+
+| Operation | 100 nodes | 1,000 nodes |
+|---|---:|---:|
+| Replace index unit | 6.70 ms | 52.5 ms |
+| Exact qualified-name lookup | 0.0006 ms | 0.004 ms |
+| Bounded traversal | 0.006 ms | 0.007 ms |
+| Delete and reinsert unit | 8.44 ms | 58.0 ms |
+| Reopen and health check | 28.3 ms | 85.8 ms |
 
 ## LadybugDB schema 3 baseline (historical, pre-port)
 
