@@ -77,10 +77,10 @@ change.
    for that concept. `DurableCommandLog` slot keys stay strings by design:
    they fold staged and published commands with null-fallbacks, a different
    concept from plugin-source identity.
-3. **Hand-written RepositoryManifestConverter (kept, reason recorded)** -
-   retained for durable-log version tolerance (missing DisplayName/SourceUri,
-   default RegisteredAt); see the comment on the converter in
-   DurableCommandLog.cs.
+3. **Hand-written RepositoryManifestConverter (unified)** - one shared
+   `CodeRepositoryManifestConverter` in `CodeJsonConverters.cs` now serves
+   both durable-log version tolerance and snapshot transport; the
+   `DurableCommandLog` private copy is deleted.
 
 ### B. Usefulness / semantics documentation
 
@@ -114,9 +114,9 @@ The Gate 0.5 audit is recorded in the [roadmap handoff](../ROADMAP.md#marang-gat
 The existing publication/index identities, typed symbol/node/declaration
 identities, bounded query envelopes and traversals, contributor provenance,
 source-drift detection, and staged durable recovery are reusable now. The
-provider-neutral gaps are immutable historical snapshot/export references,
-workspace/repository revision and freshness states, affected-test queries, and
-an explicit same-repository concurrent-publication ordering policy.
+former provider-neutral gaps all landed on `feature/latticedb-provider`:
+publication snapshots with transport, freshness states, affected-test queries,
+and optimistic concurrent-publication ordering (see ROADMAP P1 notes).
 
 Workflow/task/node ownership mapping and `SupervisorContextPackage` shaping are
 deliberately Marang adapter concerns. Explicit path queries and changed-symbol

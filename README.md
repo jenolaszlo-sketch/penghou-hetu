@@ -280,13 +280,13 @@ state.
 
 `Penghou.Hetu.LatticeDb` provides `LatticeCodeGraphStore`, an embedded durable
 implementation of the same `ICodeGraphStore` contract. It uses the community
-LatticeDbSharp 0.1.0-preview.1 binding for LatticeDB (an embedded single-file
+LatticeDbSharp 0.1.1 binding for LatticeDB (an embedded single-file
 property-graph database with Cypher, vector search, full-text search, ACID
 transactions, and durable streams), validates its schema version on open,
 persists mutations transactionally, restores state after process restart, and
 exposes a lightweight health result. The database is a single file at a
-caller-supplied file path, and the verified Linux x64 and Windows x64 native
-runtimes ship inside the binding package, so hosts reference no separate
+caller-supplied file path, and the verified Linux x64, Windows x64, and macOS
+ARM64 native runtimes ship inside the binding package, so hosts reference no separate
 native runtime package and need no OpenSSL installation. The store keeps a
 durable command log in LatticeDB and serves queries from a materialized
 in-memory projection; native graph structure (edges, property indexes,
