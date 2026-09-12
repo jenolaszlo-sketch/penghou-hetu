@@ -15,4 +15,12 @@ public sealed record LatticeDbStoreOptions
 
     /// <summary>Enables the in-memory adjacency cache.</summary>
     public bool? EnableAdjacencyCache { get; init; }
+
+    /// <summary>
+    /// Serves <c>TraverseAsync</c> without evidence filters from the
+    /// experimental native graph mirror instead of the materialized
+    /// projection. The mirror is derived state rebuilt on every publication;
+    /// provenance-bound queries always use the projection.
+    /// </summary>
+    public bool UseNativeTraversal { get; init; }
 }

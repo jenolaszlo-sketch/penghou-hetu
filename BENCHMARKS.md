@@ -23,8 +23,18 @@ Results are local engineering baselines, not portable performance guarantees.
 | Replace index unit | 7.66 ms | 52.5 ms |
 | Exact qualified-name lookup | 0.0006 ms | 0.004 ms |
 | Bounded traversal | 0.006 ms | 0.006 ms |
+| Native bounded traversal (preview mirror) | 2.11 ms | 2.05 ms |
 | Delete and reinsert unit | 9.43 ms | 55.2 ms |
 | Reopen and health check | 38.7 ms | 89.9 ms |
+
+The preview native mirror is two orders of magnitude slower than the
+projection on small bounded traversals: every hop is a native round trip and
+every returned fact pays a JSON property read plus `System.Text.Json`
+deserialization. It scales flat like the projection (2.11 ms at 100 nodes,
+2.05 ms at 1,000), so the design is sound but per-fact overhead dominates.
+Closing the gap needs server-side BFS in one query instead of per-hop calls,
+bulk fact reads instead of one property read per fact, or a binary fact
+encoding instead of JSON text. See `docs/native-graph-mirror.md`.
 
 The fixture uses a chain graph with one fewer edge than nodes. Traversal starts
 at the middle node and is fixed at depth 4, 25 nodes, and 50 edges. Lookups and

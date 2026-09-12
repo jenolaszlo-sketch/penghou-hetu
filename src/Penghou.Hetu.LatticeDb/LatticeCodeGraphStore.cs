@@ -11,9 +11,10 @@ namespace Penghou.Hetu;
 /// <para>
 /// LatticeDB is the durable command log; all graph semantics and query behavior
 /// are served from a materialized <see cref="InMemoryCodeGraphStore"/> rebuilt by
-/// replaying that log on open. Native facts gain Cypher-addressable graph
-/// structure only when the managed LatticeDbSharp surface exposes edge traversal
-/// and property indexes; until then readers delegate to the inner store.
+/// replaying that log on open. When <see cref="LatticeDb.LatticeDbStoreOptions.UseNativeTraversal"/>
+/// is enabled, an experimental native mirror additionally serves
+/// <c>TraverseAsync</c> without evidence filters from real graph structure;
+/// everything else keeps delegating to the inner store.
 /// </para>
 /// <para>
 /// Ownership and errors: a database file has a single owner process while open.
@@ -46,8 +47,11 @@ public sealed class LatticeCodeGraphStore :
 
     private readonly LatticeDatabase _database;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly bool _nativeTraversal;
     private List<PersistedCommand> _commands;
     private volatile InMemoryCodeGraphStore _inner;
+    private volatile Dictionary<string, NativeGraphMirror> _mirrors =
+        new(StringComparer.Ordinal);
     private bool _disposed;
     private readonly Action<string>? _faultInjector;
 
@@ -71,6 +75,7 @@ public sealed class LatticeCodeGraphStore :
         _database = TranslateNative(
             () => LatticeDatabase.Open(databasePath, ToNativeOptions(options)),
             "open database");
+        _nativeTraversal = options?.UseNativeTraversal is true;
         _faultInjector = faultInjector;
         try
         {
@@ -91,6 +96,10 @@ public sealed class LatticeCodeGraphStore :
                     key[..separator],
                     key[(separator + 1)..],
                     string.IsNullOrEmpty(baseline) ? null : baseline);
+            }
+            if (_nativeTraversal)
+            {
+                RestoreMirrors(repositories.Select(repository => repository.Id.Value).ToArray());
             }
         }
         catch
@@ -169,8 +178,34 @@ public sealed class LatticeCodeGraphStore :
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(CodeRepositoryId repositoryId, CodeSymbolId symbolId, CancellationToken cancellationToken = default) =>
         _inner.GetDeclarationsAsync(repositoryId, symbolId, cancellationToken);
 
-    public ValueTask<CodeGraphTraversalResult> TraverseAsync(CodeRepositoryId repositoryId, CodeGraphTraversalQuery query, CancellationToken cancellationToken = default) =>
-        _inner.TraverseAsync(repositoryId, query, cancellationToken);
+    public async ValueTask<CodeGraphTraversalResult> TraverseAsync(CodeRepositoryId repositoryId, CodeGraphTraversalQuery query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        ArgumentNullException.ThrowIfNull(query);
+        if (_nativeTraversal &&
+            query.EvidenceKinds.Count == 0 &&
+            _mirrors.TryGetValue(repositoryId.Value, out var mirror))
+        {
+            ThrowIfDisposed();
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return TranslateNative(() =>
+                {
+                    using var txn = _database.BeginReadTransaction();
+                    var result = mirror.Traverse(txn, query, cancellationToken);
+                    txn.Commit();
+                    return result;
+                }, "traverse graph");
+            }
+            finally
+            {
+                _writeGate.Release();
+            }
+        }
+
+        return await _inner.TraverseAsync(repositoryId, query, cancellationToken).ConfigureAwait(false);
+    }
 
     public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?> FindNodesByQualifiedNameWithProvenanceAsync(
         CodeRepositoryId repositoryId,
@@ -249,8 +284,14 @@ public sealed class LatticeCodeGraphStore :
             await ApplyCommandAsync(_inner, command, cancellationToken).ConfigureAwait(false);
             try
             {
-                TranslateNative(() => Persist(command, baseline, cancellationToken), "persist mutation");
+                var mirror = TranslateNative(() => Persist(command, baseline, cancellationToken), "persist mutation");
                 _commands = next;
+                if (mirror is not null && command.Run is not null)
+                {
+                    var mirrors = new Dictionary<string, NativeGraphMirror>(_mirrors, StringComparer.Ordinal);
+                    mirrors[command.Run.RepositoryId.Value] = mirror;
+                    _mirrors = mirrors;
+                }
             }
             catch
             {
@@ -264,8 +305,52 @@ public sealed class LatticeCodeGraphStore :
         }
     }
 
-    private void Persist(PersistedCommand command, string? baseline, CancellationToken cancellationToken)
+    private void RestoreMirrors(string[] repositoryIds)
     {
+        var mirrors = new Dictionary<string, NativeGraphMirror>(StringComparer.Ordinal);
+        foreach (var (key, payload) in ReadPairs(NativeGraphMirror.MirrorLabel))
+        {
+            mirrors[key] = new NativeGraphMirror(NativeGraphMirror.ReadManifest(
+                JsonSerializer.Deserialize<string>(
+                    Convert.FromBase64String(payload), SerializerOptions)
+                ?? throw new InvalidDataException($"Lattice {NativeGraphMirror.MirrorLabel} payload is invalid.")));
+        }
+
+        foreach (var repositoryId in repositoryIds)
+        {
+            if (mirrors.ContainsKey(repositoryId))
+                continue;
+            var repository = new CodeRepositoryId(repositoryId);
+            var publication = _inner.GetLatestPublicationAsync(repository, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            if (publication is null)
+                continue;
+            var units = _inner.GetPublishedUnitsAsync(repository, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            using var txn = _database.BeginWriteTransaction();
+            try
+            {
+                var mirror = TranslateNative(
+                    () => NativeGraphMirror.Rebuild(txn, units, null),
+                    "rebuild graph mirror");
+                Upsert(txn, NativeGraphMirror.MirrorLabel, repositoryId, Serialize(NativeGraphMirror.WriteManifest(mirror.Manifest)));
+                txn.Commit();
+                mirrors[repositoryId] = mirror;
+            }
+            catch
+            {
+                if (!txn.IsCompleted)
+                    txn.Rollback();
+                throw;
+            }
+        }
+
+        _mirrors = mirrors;
+    }
+
+    private NativeGraphMirror? Persist(PersistedCommand command, string? baseline, CancellationToken cancellationToken)
+    {
+        NativeGraphMirror? mirror = null;
         cancellationToken.ThrowIfCancellationRequested();
         using var txn = _database.BeginWriteTransaction();
         try
@@ -292,6 +377,24 @@ public sealed class LatticeCodeGraphStore :
                     Upsert(txn, RunLabel, RunKey(command.Run!), Serialize(command.Run));
                     Upsert(txn, IndexStateLabel, command.State!.RepositoryId.Value, Serialize(command.State));
                     DeleteMany(txn, BaselineLabel, [RunKey(command.Run!)]);
+                    if (_nativeTraversal)
+                    {
+                        var completed = command.Run!;
+                        var repositoryId = completed.RepositoryId.Value;
+                        var published = Apply(_commands, command)
+                            .Where(candidate => candidate.Kind == "replace" &&
+                                candidate.Replacement!.Origin.RepositoryId == completed.RepositoryId)
+                            .Select(candidate => candidate.Replacement!)
+                            .ToList();
+                        _mirrors.TryGetValue(repositoryId, out var existing);
+                        mirror = NativeGraphMirror.Rebuild(txn, published, existing?.Manifest);
+                        Upsert(
+                            txn,
+                            NativeGraphMirror.MirrorLabel,
+                            repositoryId,
+                            Serialize(NativeGraphMirror.WriteManifest(mirror.Manifest)));
+                    }
+
                     break;
                 case "stage-replace":
                 case "stage-delete":
@@ -307,6 +410,7 @@ public sealed class LatticeCodeGraphStore :
             }
             _faultInjector?.Invoke("before-commit");
             txn.Commit();
+            return mirror;
         }
         catch
         {

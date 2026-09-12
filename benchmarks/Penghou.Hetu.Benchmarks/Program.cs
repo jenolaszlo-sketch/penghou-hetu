@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using Penghou.Hetu;
+using Penghou.Hetu.LatticeDb;
 
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 
@@ -12,7 +13,9 @@ public class LatticeStoreBenchmarks
     private readonly CodeIndexRunId _stagingRunId = new("run:benchmark:staging");
     private readonly CodePluginId _pluginId = new("plugin:benchmark");
     private string _databasePath = null!;
+    private string _nativeDatabasePath = null!;
     private LatticeCodeGraphStore _store = null!;
+    private LatticeCodeGraphStore _nativeStore = null!;
     private CodeIndexUnitReplacement _replacement = null!;
     private CodeNodeId _middleNodeId = null!;
 
@@ -39,6 +42,15 @@ public class LatticeStoreBenchmarks
             started.AddSeconds(2),
             plugins: [_pluginId]));
         _replacement = CreateReplacement(NodeCount, _stagingRunId);
+
+        _nativeDatabasePath = Path.Combine(Path.GetTempPath(), $"hetu-benchmark-native-{Guid.NewGuid():N}.ltdb");
+        _nativeStore = new(_nativeDatabasePath, new LatticeDbStoreOptions { UseNativeTraversal = true });
+        await _nativeStore.UpsertRepositoryAsync(new(_repositoryId));
+        await _nativeStore.StoreIndexRunAsync(new(_repositoryId, _publishedRunId, started, plugins: [_pluginId]));
+        await _nativeStore.StageIndexUnitAsync(published);
+        await _nativeStore.CompleteIndexRunAsync(
+            new(_repositoryId, _publishedRunId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [_pluginId]),
+            new(_repositoryId, _publishedRunId, []));
     }
 
     [GlobalCleanup]
@@ -47,6 +59,9 @@ public class LatticeStoreBenchmarks
         _store.Dispose();
         if (File.Exists(_databasePath))
             File.Delete(_databasePath);
+        _nativeStore.Dispose();
+        if (File.Exists(_nativeDatabasePath))
+            File.Delete(_nativeDatabasePath);
     }
 
     [Benchmark]
@@ -59,6 +74,12 @@ public class LatticeStoreBenchmarks
     [Benchmark]
     public ValueTask<CodeGraphTraversalResult> BoundedTraversal() =>
         _store.TraverseAsync(
+            _repositoryId,
+            new(_middleNodeId, CodeGraphDirection.Both, [CodeEdgeKinds.Calls], maxDepth: 4, maxNodes: 25, maxEdges: 50));
+
+    [Benchmark]
+    public ValueTask<CodeGraphTraversalResult> NativeBoundedTraversal() =>
+        _nativeStore.TraverseAsync(
             _repositoryId,
             new(_middleNodeId, CodeGraphDirection.Both, [CodeEdgeKinds.Calls], maxDepth: 4, maxNodes: 25, maxEdges: 50));
 
