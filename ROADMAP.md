@@ -514,13 +514,9 @@ semantics mechanically.
 
 ## Engineering health
 
-Tracked separately in [docs/architecture-review.md](docs/architecture-review.md),
-which carries the live open-findings ledger (namespace/package alignment,
-composite key types, coverage gates, API-surface snapshots for every package,
-package validation, benchmark CI integration). Items there that gate the first
-release: package validation, per-package public-API snapshots, and coverage
-reporting with thresholds. Keep that ledger and this roadmap in sync — the
-roadmap owns features; the review owns engineering debt.
+Package validation and per-package public-API contract tests are part of the
+current build. Coverage reporting with enforced thresholds and benchmark CI
+integration remain engineering follow-ups before a stable first release.
 
 ## Explicit non-goals for the first release
 
