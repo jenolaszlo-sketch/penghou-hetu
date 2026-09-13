@@ -49,6 +49,7 @@ public sealed class LatticeCodeGraphStore :
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly bool _nativeTraversal;
     private List<PersistedCommand> _commands;
+    private readonly Dictionary<string, string?> _baselines = new(StringComparer.Ordinal);
     private volatile InMemoryCodeGraphStore _inner;
     private volatile Dictionary<string, NativeGraphMirror> _mirrors =
         new(StringComparer.Ordinal);
@@ -69,6 +70,15 @@ public sealed class LatticeCodeGraphStore :
         string databasePath,
         LatticeDbStoreOptions? options,
         Action<string>? faultInjector)
+        : this(databasePath, options, faultInjector, CancellationToken.None)
+    {
+    }
+
+    private LatticeCodeGraphStore(
+        string databasePath,
+        LatticeDbStoreOptions? options,
+        Action<string>? faultInjector,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(databasePath))
             throw new ArgumentException("A LatticeDB database file path is required.", nameof(databasePath));
@@ -79,24 +89,25 @@ public sealed class LatticeCodeGraphStore :
         _faultInjector = faultInjector;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             InitializeSchema();
+            cancellationToken.ThrowIfCancellationRequested();
             var repositories = ReadTable<CodeRepositoryManifest>(RepositoryLabel);
             var runs = ReadTable<CodeIndexRunManifest>(RunLabel);
             var units = ReadTable<CodeIndexUnitReplacement>(UnitLabel);
             var stages = ReadTable<PersistedCommand>(StageLabel);
             var states = ReadTable<CodeRepositoryIndexState>(IndexStateLabel);
             _commands = Reconstruct(repositories, runs, units, stages, states);
-            _inner = ReplayAsync(_commands, CancellationToken.None).GetAwaiter().GetResult();
+            _inner = ReplayAsync(_commands, cancellationToken).GetAwaiter().GetResult();
             foreach (var (key, baseline) in ReadPairs(BaselineLabel))
             {
                 var separator = key.IndexOf('\n');
                 if (separator <= 0 || separator == key.Length - 1)
                     throw new InvalidDataException($"Lattice {BaselineLabel} key is invalid.");
-                _inner.RestoreBaseline(
-                    key[..separator],
-                    key[(separator + 1)..],
-                    string.IsNullOrEmpty(baseline) ? null : baseline);
+                _baselines.Add(key, string.IsNullOrEmpty(baseline) ? null : baseline);
             }
+            RestoreBaselines(_inner);
+            cancellationToken.ThrowIfCancellationRequested();
             if (_nativeTraversal)
             {
                 RestoreMirrors(repositories.Select(repository => repository.Id.Value).ToArray());
@@ -126,32 +137,32 @@ public sealed class LatticeCodeGraphStore :
         Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return new LatticeCodeGraphStore(databasePath, options);
+            return new LatticeCodeGraphStore(databasePath, options, null, cancellationToken);
         }, cancellationToken);
 
     public ValueTask UpsertRepositoryAsync(CodeRepositoryManifest repository, CancellationToken cancellationToken = default) =>
         MutateAsync(new("repository", Repository: repository), cancellationToken);
 
     public ValueTask<CodeRepositoryManifest?> GetRepositoryAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
-        _inner.GetRepositoryAsync(repositoryId, cancellationToken);
+        ReadAsync(store => store.GetRepositoryAsync(repositoryId, cancellationToken), cancellationToken);
 
     public ValueTask StoreIndexRunAsync(CodeIndexRunManifest run, CancellationToken cancellationToken = default) =>
         MutateAsync(new("run", Run: run), cancellationToken);
 
     public ValueTask<CodeIndexRunManifest?> GetIndexRunAsync(CodeRepositoryId repositoryId, CodeIndexRunId runId, CancellationToken cancellationToken = default) =>
-        _inner.GetIndexRunAsync(repositoryId, runId, cancellationToken);
+        ReadAsync(store => store.GetIndexRunAsync(repositoryId, runId, cancellationToken), cancellationToken);
 
     public ValueTask CompleteIndexRunAsync(CodeIndexRunManifest completedRun, CodeRepositoryIndexState state, CancellationToken cancellationToken = default) =>
         MutateAsync(new("complete", Run: completedRun, State: state), cancellationToken);
 
     public ValueTask<CodeRepositoryIndexState?> GetLatestIndexStateAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
-        _inner.GetLatestIndexStateAsync(repositoryId, cancellationToken);
+        ReadAsync(store => store.GetLatestIndexStateAsync(repositoryId, cancellationToken), cancellationToken);
 
     public ValueTask<CodeGraphPublication?> GetLatestPublicationAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
-        _inner.GetLatestPublicationAsync(repositoryId, cancellationToken);
+        ReadAsync(store => store.GetLatestPublicationAsync(repositoryId, cancellationToken), cancellationToken);
 
     public ValueTask<IReadOnlyList<CodeIndexUnitReplacement>> GetPublishedUnitsAsync(CodeRepositoryId repositoryId, CancellationToken cancellationToken = default) =>
-        _inner.GetPublishedUnitsAsync(repositoryId, cancellationToken);
+        ReadAsync(store => store.GetPublishedUnitsAsync(repositoryId, cancellationToken), cancellationToken);
 
     public ValueTask StageIndexUnitAsync(CodeIndexUnitReplacement replacement, CancellationToken cancellationToken = default) =>
         MutateAsync(new("stage-replace", Replacement: replacement), cancellationToken);
@@ -160,35 +171,35 @@ public sealed class LatticeCodeGraphStore :
         MutateAsync(new("stage-delete", RepositoryId: repositoryId, RunId: indexRunId, PluginId: pluginId, UnitId: indexUnitId), cancellationToken);
 
     public ValueTask<CodeGraphNode?> GetNodeAsync(CodeRepositoryId repositoryId, CodeNodeId nodeId, CancellationToken cancellationToken = default) =>
-        _inner.GetNodeAsync(repositoryId, nodeId, cancellationToken);
+        ReadAsync(store => store.GetNodeAsync(repositoryId, nodeId, cancellationToken), cancellationToken);
 
     public ValueTask<CodeGraphNode?> FindSymbolAsync(CodeRepositoryId repositoryId, CodeSymbolId symbolId, CancellationToken cancellationToken = default) =>
-        _inner.FindSymbolAsync(repositoryId, symbolId, cancellationToken);
+        ReadAsync(store => store.FindSymbolAsync(repositoryId, symbolId, cancellationToken), cancellationToken);
 
     public ValueTask<IReadOnlyList<CodeGraphNode>> FindNodesByQualifiedNameAsync(CodeRepositoryId repositoryId, string qualifiedName, CancellationToken cancellationToken = default) =>
-        _inner.FindNodesByQualifiedNameAsync(repositoryId, qualifiedName, cancellationToken);
+        ReadAsync(store => store.FindNodesByQualifiedNameAsync(repositoryId, qualifiedName, cancellationToken), cancellationToken);
 
     public ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
         CodeRepositoryId repositoryId,
         string pattern,
         int maxResults = CodeNamePatternResult.DefaultMaxResults,
         CancellationToken cancellationToken = default) =>
-        _inner.FindNodesByNamePatternAsync(repositoryId, pattern, maxResults, cancellationToken);
+        ReadAsync(store => store.FindNodesByNamePatternAsync(repositoryId, pattern, maxResults, cancellationToken), cancellationToken);
 
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(CodeRepositoryId repositoryId, CodeSymbolId symbolId, CancellationToken cancellationToken = default) =>
-        _inner.GetDeclarationsAsync(repositoryId, symbolId, cancellationToken);
+        ReadAsync(store => store.GetDeclarationsAsync(repositoryId, symbolId, cancellationToken), cancellationToken);
 
     public async ValueTask<CodeGraphTraversalResult> TraverseAsync(CodeRepositoryId repositoryId, CodeGraphTraversalQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentNullException.ThrowIfNull(query);
-        if (_nativeTraversal &&
-            query.EvidenceKinds.Count == 0 &&
-            _mirrors.TryGetValue(repositoryId.Value, out var mirror))
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             ThrowIfDisposed();
-            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            if (_nativeTraversal &&
+                query.EvidenceKinds.Count == 0 &&
+                _mirrors.TryGetValue(repositoryId.Value, out var mirror))
             {
                 return TranslateNative(() =>
                 {
@@ -198,32 +209,32 @@ public sealed class LatticeCodeGraphStore :
                     return result;
                 }, "traverse graph");
             }
-            finally
-            {
-                _writeGate.Release();
-            }
-        }
 
-        return await _inner.TraverseAsync(repositoryId, query, cancellationToken).ConfigureAwait(false);
+            return await _inner.TraverseAsync(repositoryId, query, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?> FindNodesByQualifiedNameWithProvenanceAsync(
         CodeRepositoryId repositoryId,
         string qualifiedName,
         CancellationToken cancellationToken = default) =>
-        _inner.FindNodesByQualifiedNameWithProvenanceAsync(repositoryId, qualifiedName, cancellationToken);
+        ReadAsync(store => store.FindNodesByQualifiedNameWithProvenanceAsync(repositoryId, qualifiedName, cancellationToken), cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> TraverseWithProvenanceAsync(
         CodeRepositoryId repositoryId,
         CodeGraphTraversalQuery query,
         CancellationToken cancellationToken = default) =>
-        _inner.TraverseWithProvenanceAsync(repositoryId, query, cancellationToken);
+        ReadAsync(store => store.TraverseWithProvenanceAsync(repositoryId, query, cancellationToken), cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphDeclaration>>?> GetDeclarationsWithProvenanceAsync(
         CodeRepositoryId repositoryId,
         CodeSymbolId symbolId,
         CancellationToken cancellationToken = default) =>
-        _inner.GetDeclarationsWithProvenanceAsync(repositoryId, symbolId, cancellationToken);
+        ReadAsync(store => store.GetDeclarationsWithProvenanceAsync(repositoryId, symbolId, cancellationToken), cancellationToken);
 
     private CodeGraphStoreHealth CheckHealth()
     {
@@ -233,20 +244,24 @@ public sealed class LatticeCodeGraphStore :
         return new CodeGraphStoreHealth(
             healthy ? CodeGraphStoreHealthStatus.Healthy : CodeGraphStoreHealthStatus.Unhealthy,
             "lattice",
-            healthy ? null : $"Schema version {version} is incompatible with expected version {CurrentSchemaVersion}.",
+            healthy
+                ? _nativeTraversal
+                    ? "Native traversal mirrors are enabled and verified against the current publication on open."
+                    : "Queries use the authoritative materialized projection; native traversal mirrors are disabled."
+                : $"Schema version {version} is incompatible with expected version {CurrentSchemaVersion}.",
             version,
             Count(RepositoryLabel),
             Count(RunLabel),
             Count(UnitLabel));
     }
 
-    public ValueTask<CodeGraphStoreHealth> CheckHealthAsync(
+    public async ValueTask<CodeGraphStoreHealth> CheckHealthAsync(
         CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return new(CheckHealth());
+            return CheckHealth();
         }
         catch (OperationCanceledException)
         {
@@ -254,20 +269,31 @@ public sealed class LatticeCodeGraphStore :
         }
         catch (Exception exception)
         {
-            return new(new CodeGraphStoreHealth(
+            return new CodeGraphStoreHealth(
                 CodeGraphStoreHealthStatus.Unhealthy,
                 "lattice",
-                exception.Message));
+                exception.Message);
+        }
+        finally
+        {
+            _writeGate.Release();
         }
     }
 
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-        _writeGate.Dispose();
-        _database.Dispose();
+        _writeGate.Wait();
+        try
+        {
+            if (_disposed)
+                return;
+            _database.Dispose();
+            _disposed = true;
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     private async ValueTask MutateAsync(PersistedCommand command, CancellationToken cancellationToken)
@@ -276,26 +302,43 @@ public sealed class LatticeCodeGraphStore :
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var baseline = command is { Kind: "run", Run.Status: CodeIndexRunStatus.Running }
-                ? (await _inner.GetLatestPublicationAsync(command.Run.RepositoryId, cancellationToken)
-                    .ConfigureAwait(false))?.IndexRunId.Value
-                : null;
+            ThrowIfDisposed();
+            var runKey = command.Run is null ? null : RunKey(command.Run);
+            string? baseline = null;
+            if (command is { Kind: "run", Run.Status: CodeIndexRunStatus.Running })
+            {
+                if (!_baselines.TryGetValue(runKey!, out baseline))
+                {
+                    baseline = (await _inner.GetLatestPublicationAsync(command.Run.RepositoryId, cancellationToken)
+                        .ConfigureAwait(false))?.IndexRunId.Value;
+                }
+            }
             var next = Apply(_commands, command);
             await ApplyCommandAsync(_inner, command, cancellationToken).ConfigureAwait(false);
             try
             {
                 var mirror = TranslateNative(() => Persist(command, baseline, cancellationToken), "persist mutation");
                 _commands = next;
-                if (mirror is not null && command.Run is not null)
+                if (command is { Kind: "run", Run.Status: CodeIndexRunStatus.Running })
+                    _baselines.TryAdd(runKey!, baseline);
+                else if (command.Kind == "complete" ||
+                         command is { Kind: "run", Run.Status: not CodeIndexRunStatus.Running })
+                    _baselines.Remove(runKey!);
+
+                if (command.Kind == "complete" && command.Run is not null)
                 {
                     var mirrors = new Dictionary<string, NativeGraphMirror>(_mirrors, StringComparer.Ordinal);
-                    mirrors[command.Run.RepositoryId.Value] = mirror;
+                    if (mirror is null)
+                        mirrors.Remove(command.Run.RepositoryId.Value);
+                    else
+                        mirrors[command.Run.RepositoryId.Value] = mirror;
                     _mirrors = mirrors;
                 }
             }
             catch
             {
                 _inner = await ReplayAsync(_commands, CancellationToken.None).ConfigureAwait(false);
+                RestoreBaselines(_inner);
                 throw;
             }
         }
@@ -305,21 +348,53 @@ public sealed class LatticeCodeGraphStore :
         }
     }
 
+    private async ValueTask<T> ReadAsync<T>(
+        Func<InMemoryCodeGraphStore, ValueTask<T>> read,
+        CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            return await read(_inner).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    private void RestoreBaselines(InMemoryCodeGraphStore store)
+    {
+        foreach (var (key, baseline) in _baselines)
+        {
+            var separator = key.IndexOf('\n');
+            store.RestoreBaseline(key[..separator], key[(separator + 1)..], baseline);
+        }
+    }
+
     private void RestoreMirrors(string[] repositoryIds)
     {
         var mirrors = new Dictionary<string, NativeGraphMirror>(StringComparer.Ordinal);
+        var existingMirrors = new Dictionary<string, NativeGraphMirror>(StringComparer.Ordinal);
         foreach (var (key, payload) in ReadPairs(NativeGraphMirror.MirrorLabel))
         {
-            mirrors[key] = new NativeGraphMirror(NativeGraphMirror.ReadManifest(
-                JsonSerializer.Deserialize<string>(
-                    Convert.FromBase64String(payload), SerializerOptions)
-                ?? throw new InvalidDataException($"Lattice {NativeGraphMirror.MirrorLabel} payload is invalid.")));
+            try
+            {
+                existingMirrors[key] = new NativeGraphMirror(NativeGraphMirror.ReadManifest(
+                    JsonSerializer.Deserialize<string>(
+                        Convert.FromBase64String(payload), SerializerOptions)
+                    ?? throw new InvalidDataException()));
+            }
+            catch (Exception exception) when (exception is FormatException or JsonException or InvalidDataException)
+            {
+                // Derived mirror metadata is recoverable. Rebuild it from the
+                // authoritative published units below.
+            }
         }
 
         foreach (var repositoryId in repositoryIds)
         {
-            if (mirrors.ContainsKey(repositoryId))
-                continue;
             var repository = new CodeRepositoryId(repositoryId);
             var publication = _inner.GetLatestPublicationAsync(repository, CancellationToken.None)
                 .GetAwaiter().GetResult();
@@ -330,8 +405,9 @@ public sealed class LatticeCodeGraphStore :
             using var txn = _database.BeginWriteTransaction();
             try
             {
+                existingMirrors.TryGetValue(repositoryId, out var existing);
                 var mirror = TranslateNative(
-                    () => NativeGraphMirror.Rebuild(txn, units, null),
+                    () => NativeGraphMirror.Rebuild(txn, units, existing?.Manifest),
                     "rebuild graph mirror");
                 Upsert(txn, NativeGraphMirror.MirrorLabel, repositoryId, Serialize(NativeGraphMirror.WriteManifest(mirror.Manifest)));
                 txn.Commit();
@@ -393,6 +469,10 @@ public sealed class LatticeCodeGraphStore :
                             NativeGraphMirror.MirrorLabel,
                             repositoryId,
                             Serialize(NativeGraphMirror.WriteManifest(mirror.Manifest)));
+                    }
+                    else
+                    {
+                        DeleteMany(txn, NativeGraphMirror.MirrorLabel, [command.Run!.RepositoryId.Value]);
                     }
 
                     break;

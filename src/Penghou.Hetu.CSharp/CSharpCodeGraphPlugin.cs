@@ -29,7 +29,7 @@ public sealed partial class CSharpCodeGraphPlugin : ICodeGraphPlugin
     public string Version => PackageVersion;
     public string Language => "csharp";
     public IReadOnlyCollection<string> FileExtensions =>
-        [".cs", ".csproj", ".sln", ".props", ".targets"];
+        [".cs", ".csproj", ".sln", ".slnx", ".props", ".targets"];
     public CodeGraphCapabilities Capabilities =>
         CodeGraphCapabilities.Syntax |
         CodeGraphCapabilities.Symbols |

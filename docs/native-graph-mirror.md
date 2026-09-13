@@ -16,13 +16,16 @@ The mirror is derived state, never the source of truth:
   carrying its full JSON; each `CodeGraphEdge` becomes one native edge typed
   by its kind and carrying its JSON. Native ids are engine-assigned, so a
   `HetuMirror` row maps Hetu identities to native identities per repository.
-- The mirror is rebuilt from published units on every publication and on
-  reopen when its row is missing. A corrupt or stale mirror is recoverable
-  by rebuilding; it can never poison the log.
+- The mirror is rebuilt from published units on every enabled publication and
+  every enabled reopen. Publications made while native traversal is disabled
+  remove the persisted marker, so re-enabling cannot serve stale data. A corrupt
+  mirror is recoverable by rebuilding; it can never poison the log.
 - Mirror writes join the same native transaction as the log writes, so a
   failed completion rolls both back together.
 - Evidence-filtered traversals stay on the projection: evidence lives in
   edge facts, and traversal results do not carry edge properties.
+- Store health details report whether eligible traversals use verified native
+  mirrors or the authoritative materialized projection.
 
 ## Measured reality
 

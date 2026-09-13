@@ -58,6 +58,40 @@ public sealed class PluginContractTests
                 [source, source]));
     }
 
+    [Fact]
+    public void PluginContext_SettingsAreAnImmutableSnapshot()
+    {
+        var input = new Dictionary<string, string> { ["mode"] = "initial" };
+        var context = new CodeGraphPluginContext(
+            new CodeRepositoryId("repo:test"),
+            "vfs://workspace/test",
+            new CodeIndexRunId("run:settings"),
+            [Source("src/One.cs", "class One {}")],
+            input);
+
+        input["mode"] = "changed";
+        Assert.Equal("initial", context.Settings["mode"]);
+        Assert.Throws<NotSupportedException>(() =>
+            ((IDictionary<string, string>)context.Settings).Add("extra", "value"));
+    }
+
+    [Fact]
+    public void PluginContext_PreviousUnitsAreAnImmutableOrderedSnapshot()
+    {
+        var units = new List<CodeIndexUnitId> { new("unit:z"), new("unit:a") };
+        var context = new CodeGraphPluginContext(
+            new CodeRepositoryId("repo:test"),
+            "vfs://workspace/test",
+            new CodeIndexRunId("run:units"),
+            [Source("src/One.cs", "class One {}")],
+            previousIndexUnits: units);
+
+        units.Clear();
+        Assert.Equal(["unit:a", "unit:z"], context.PreviousIndexUnits.Select(unit => unit.Value));
+        Assert.Throws<NotSupportedException>(() =>
+            ((IList<CodeIndexUnitId>)context.PreviousIndexUnits).Add(new("unit:extra")));
+    }
+
     private static CodeGraphPluginContext CreateContext() =>
         new(
             new CodeRepositoryId("repo:test"),

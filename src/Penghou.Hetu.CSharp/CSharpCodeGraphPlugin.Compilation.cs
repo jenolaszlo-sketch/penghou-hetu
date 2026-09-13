@@ -10,6 +10,9 @@ namespace Penghou.Hetu;
 
 public sealed partial class CSharpCodeGraphPlugin
 {
+    private static readonly Lazy<IReadOnlyList<MetadataReference>> PlatformReferences =
+        new(BuildPlatformReferences, LazyThreadSafetyMode.ExecutionAndPublication);
+
     private static CodeLocation Location(string path, SyntaxNode syntax)
     {
         var span = syntax.GetLocation().GetLineSpan().Span;
@@ -51,7 +54,9 @@ public sealed partial class CSharpCodeGraphPlugin
             concurrentBuild: false);
     }
 
-    private static IReadOnlyList<MetadataReference> CreatePlatformReferences()
+    private static IReadOnlyList<MetadataReference> CreatePlatformReferences() => PlatformReferences.Value;
+
+    private static IReadOnlyList<MetadataReference> BuildPlatformReferences()
     {
         var trustedAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
         if (string.IsNullOrWhiteSpace(trustedAssemblies))

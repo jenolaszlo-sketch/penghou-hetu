@@ -35,6 +35,12 @@ internal static partial class CSharpProjectDiscovery
 {
     private const string LooseProjectPath = "@loose/csharp";
     private const int MaxPackagesPerProject = 256;
+    internal static StringComparer PathComparer { get; } = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+    private static StringComparison PathComparison { get; } = OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
 
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -57,7 +63,8 @@ internal static partial class CSharpProjectDiscovery
             .Select(path => Parse(path, content[path], sourcePaths))
             .ToList();
         var solutionPaths = content.Keys
-            .Where(path => path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            .Where(path => path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
             .Order(StringComparer.Ordinal)
             .ToArray();
         if (solutionPaths.Length == 0)
@@ -67,13 +74,15 @@ internal static partial class CSharpProjectDiscovery
         // projects across every solution. Unlisted projects are skipped
         // (warned), never silently merged; listed-but-absent projects warn.
         var listed = solutionPaths
-            .SelectMany(solution => ParseSolutionProjects(content[solution], Directory(solution)))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .SelectMany(solution => solution.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                ? ParseSolutionXmlProjects(content[solution], Directory(solution))
+                : ParseSolutionProjects(content[solution], Directory(solution)))
+            .Distinct(PathComparer)
             .Order(StringComparer.Ordinal)
             .ToArray();
         var discoveredPaths = discovered
             .Select(project => project.Path)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(PathComparer);
         var warnings = listed
             .Where(path => !discoveredPaths.Contains(path))
             .Select(_ => "csharp.solution.missing-project")
@@ -81,10 +90,10 @@ internal static partial class CSharpProjectDiscovery
             .Order(StringComparer.Ordinal)
             .ToList();
         var included = discovered
-            .Where(project => listed.Contains(project.Path, StringComparer.OrdinalIgnoreCase))
+            .Where(project => listed.Contains(project.Path, PathComparer))
             .ToList();
         warnings.AddRange(discovered
-            .Where(project => !listed.Contains(project.Path, StringComparer.OrdinalIgnoreCase))
+            .Where(project => !listed.Contains(project.Path, PathComparer))
             .Select(_ => "csharp.solution.unlisted-project")
             .Distinct());
         var loose = ComputeLoose(included, discovered, sourcePaths);
@@ -112,7 +121,7 @@ internal static partial class CSharpProjectDiscovery
     {
         var assigned = assignedProjects
             .SelectMany(project => project.SourcePaths)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(PathComparer);
         return sourcePaths.Where(path =>
             !assigned.Contains(path) &&
             !directoryProjects.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
@@ -157,6 +166,30 @@ internal static partial class CSharpProjectDiscovery
         }
     }
 
+    /// <summary>Reads project membership from the XML-based solution format.</summary>
+    private static IEnumerable<string> ParseSolutionXmlProjects(string text, string directory)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(text, LoadOptions.None);
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var path in document.Descendants()
+                     .Where(element => element.Name.LocalName == "Project")
+                     .Select(element => element.Attribute("Path")?.Value)
+                     .Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            var combined = Combine(directory, path!.Replace('\\', '/'));
+            if (combined.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                yield return combined;
+        }
+    }
+
     public static string IndexUnitId(string projectPath) =>
         $"csharp:project:{IdentityHash(projectPath)}";
 
@@ -196,7 +229,7 @@ internal static partial class CSharpProjectDiscovery
         var references = Attributes(document, "ProjectReference", "Include")
             .Select(reference => Combine(directory, reference))
             .Where(reference => reference.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(PathComparer)
             .Order(StringComparer.Ordinal)
             .ToArray();
         // Package references are recorded verbatim: no MSBuild evaluation,
@@ -232,7 +265,7 @@ internal static partial class CSharpProjectDiscovery
             path,
             name,
             Property("AssemblyName") ?? name,
-            selected.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray(),
+            selected.Distinct(PathComparer).Order(StringComparer.Ordinal).ToArray(),
             references,
             packages,
             Property("TargetFramework") ?? Property("TargetFrameworks")?.Split(';')[0],
@@ -275,12 +308,15 @@ internal static partial class CSharpProjectDiscovery
             .Replace(@"\*\*", ".*", StringComparison.Ordinal)
             .Replace(@"\*", "[^/]*", StringComparison.Ordinal)
             .Replace(@"\?", "[^/]", StringComparison.Ordinal) + "$";
-        return Regex.IsMatch(source, regex, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var options = RegexOptions.CultureInvariant;
+        if (OperatingSystem.IsWindows())
+            options |= RegexOptions.IgnoreCase;
+        return Regex.IsMatch(source, regex, options);
     }
 
     private static bool IsUnderDirectory(string path, string directory) =>
         directory.Length == 0 ||
-        path.StartsWith($"{directory}/", StringComparison.OrdinalIgnoreCase);
+        path.StartsWith($"{directory}/", PathComparison);
 
     private static string Directory(string path) => path.Contains('/')
         ? path[..path.LastIndexOf('/')]

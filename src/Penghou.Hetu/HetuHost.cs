@@ -15,6 +15,7 @@ public sealed class HetuHostBuilder
     ];
     private Func<ICodeGraphStore>? _storeFactory;
     private CodeIndexingOptions? _indexingOptions;
+    private bool _built;
 
     /// <summary>Sets the graph store. Call once before Build.</summary>
     public HetuHostBuilder UseStore(Func<ICodeGraphStore> storeFactory)
@@ -64,11 +65,31 @@ public sealed class HetuHostBuilder
     /// <summary>Builds the host.</summary>
     public HetuHost Build()
     {
-        var store = _storeFactory?.Invoke() ?? new InMemoryCodeGraphStore();
+        if (_built)
+            throw new InvalidOperationException("A HetuHostBuilder can build only one host.");
+
+        // Validate registration sets before acquiring an owned store resource.
         var pluginRegistry = new CodeGraphPluginRegistry(_plugins);
         var repositoryRegistry = new CodeRepositoryProviderRegistry(_repositoryProviders);
-
-        return new HetuHost(repositoryRegistry, pluginRegistry, store, _indexingOptions);
+        _built = true;
+        var store = _storeFactory?.Invoke() ?? new InMemoryCodeGraphStore();
+        try
+        {
+            return new HetuHost(repositoryRegistry, pluginRegistry, store, _indexingOptions);
+        }
+        catch
+        {
+            switch (store)
+            {
+                case IAsyncDisposable asyncDisposable:
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    break;
+                case IDisposable disposable:
+                    disposable.Dispose();
+                    break;
+            }
+            throw;
+        }
     }
 }
 

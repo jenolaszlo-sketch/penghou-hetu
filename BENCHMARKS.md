@@ -11,7 +11,7 @@ Run the complete matrix in Release mode:
 dotnet run -c Release --project benchmarks/Penghou.Hetu.Benchmarks -- --job short
 ```
 
-## LatticeDB schema 1 baseline (current)
+## LatticeDB schema 1 baseline (2026-09-13, LatticeDbSharp 0.1.1)
 
 Measured on 2026-09-13 using LatticeDbSharp 0.1.1, .NET 10.0.11,
 Windows 11, and an Intel Core Ultra 5 125H, with a short smoke job
@@ -77,3 +77,5 @@ replacement transactionally refreshes owned facts and affected adjacency rows.
 Benchmark output belongs under `BenchmarkDotNet.Artifacts`, which is ignored by
 Git. Re-run the matrix when changing the LatticeDb schema, serialization, native
 package, batching strategy, or query shape.
+The current provider references LatticeDbSharp 0.2.0, so these figures remain a
+historical comparison until the next benchmark run records a new baseline.

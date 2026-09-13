@@ -95,13 +95,13 @@ public sealed class CodeIndexingService
 {
     private readonly CodeRepositoryProviderRegistry _repositories;
     private readonly CodeGraphPluginRegistry _plugins;
-    private readonly ICodeGraphIndexStore _store;
+    private readonly ICodeGraphStore _store;
     private readonly TimeProvider _timeProvider;
 
     public CodeIndexingService(
         CodeRepositoryProviderRegistry repositories,
         CodeGraphPluginRegistry plugins,
-        ICodeGraphIndexStore store,
+        ICodeGraphStore store,
         TimeProvider? timeProvider = null)
     {
         _repositories = repositories ?? throw new ArgumentNullException(nameof(repositories));
@@ -251,6 +251,8 @@ public sealed class CodeIndexingService
                     previousState.IndexIdentity),
                 previousState);
         }
+        var publishedUnits = await _store.GetPublishedUnitsAsync(descriptor.Id, cancellationToken)
+            .ConfigureAwait(false);
         var running = new CodeIndexRunManifest(
             descriptor.Id,
             runId,
@@ -283,7 +285,7 @@ public sealed class CodeIndexingService
                 try
                 {
                     context = CreateContext(
-                        descriptor, runId, plugin, plan, materialized, previousState);
+                        descriptor, runId, plugin, plan, materialized, previousState, publishedUnits);
                     await using var session = await plugin.CreateSessionAsync(context, cancellationToken)
                         .ConfigureAwait(false);
                     var scopedSink = new PluginScopedSink(
@@ -402,7 +404,8 @@ public sealed class CodeIndexingService
         ICodeGraphPlugin plugin,
         CodeIndexPlan plan,
         IReadOnlyDictionary<PluginSourceKey, MaterializedSource> materialized,
-        CodeRepositoryIndexState? previousState)
+        CodeRepositoryIndexState? previousState,
+        IReadOnlyList<CodeIndexUnitReplacement> publishedUnits)
     {
         var previous = previousState?.Sources
             .Where(source => source.PluginId == plugin.Id)
@@ -434,7 +437,18 @@ public sealed class CodeIndexingService
             (CodeGraphSourceChangeKind)item.Status,
             previous.GetValueOrDefault(item.Manifest.SourcePath)?.SourceHash,
             item.Status == CodeIndexPlanStatus.Deleted ? null : item.Manifest.SourceHash)).ToArray();
-        return new(descriptor.Id, descriptor.Location, runId, sources, descriptor.Settings, changes);
+        var previousUnits = publishedUnits
+            .Where(unit => unit.Origin.PluginId == plugin.Id)
+            .Select(unit => unit.Origin.IndexUnitId)
+            .ToArray();
+        return new(
+            descriptor.Id,
+            descriptor.Location,
+            runId,
+            sources,
+            descriptor.Settings,
+            changes,
+            previousUnits);
     }
 
     private static CodeRepositoryIndexState CreateState(

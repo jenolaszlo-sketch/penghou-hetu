@@ -375,6 +375,171 @@ public sealed class LatticeCodeGraphStoreTests
             nodes);
     }
 
+    [Fact]
+    public async Task FailedCommitNeverPublishesProspectiveStateToReaders()
+    {
+        var path = TemporaryDatabasePath();
+        using var enteredCommit = new ManualResetEventSlim();
+        using var releaseCommit = new ManualResetEventSlim();
+        var fail = false;
+        var repositoryId = new CodeRepositoryId("repo:visibility");
+        try
+        {
+            using var store = new LatticeCodeGraphStore(path, null, point =>
+            {
+                if (!fail || point != "before-commit")
+                    return;
+                enteredCommit.Set();
+                releaseCommit.Wait(TimeSpan.FromSeconds(15));
+                throw new InjectedPersistenceException();
+            });
+            await store.UpsertRepositoryAsync(new(repositoryId, "old"));
+            fail = true;
+            var mutation = Task.Run(async () =>
+                await store.UpsertRepositoryAsync(new(repositoryId, "uncommitted")));
+            Assert.True(enteredCommit.Wait(TimeSpan.FromSeconds(15)));
+
+            var read = store.GetRepositoryAsync(repositoryId).AsTask();
+            await Task.Delay(100);
+            Assert.False(read.IsCompleted);
+            releaseCommit.Set();
+
+            await Assert.ThrowsAsync<InjectedPersistenceException>(() => mutation);
+            Assert.Equal("old", (await read)!.DisplayName);
+        }
+        finally
+        {
+            releaseCommit.Set();
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task FailedUnrelatedWritePreservesRunningRunBaseline()
+    {
+        var path = TemporaryDatabasePath();
+        var repositoryId = new CodeRepositoryId("repo:baseline-rollback");
+        var pluginId = new CodePluginId("plugin:baseline-rollback");
+        var firstRun = new CodeIndexRunId("run:first");
+        var pendingRun = new CodeIndexRunId("run:pending");
+        var started = DateTimeOffset.UtcNow;
+        var fail = false;
+        try
+        {
+            using var store = new LatticeCodeGraphStore(path, null, point =>
+            {
+                if (fail && point == "before-commit")
+                    throw new InjectedPersistenceException();
+            });
+            await store.UpsertRepositoryAsync(new(repositoryId));
+            await store.StoreIndexRunAsync(new(repositoryId, firstRun, started, plugins: [pluginId]));
+            await store.CompleteIndexRunAsync(
+                new(repositoryId, firstRun, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+                new(repositoryId, firstRun, []));
+            await store.StoreIndexRunAsync(new(repositoryId, pendingRun, started.AddSeconds(2), plugins: [pluginId]));
+
+            fail = true;
+            await Assert.ThrowsAsync<InjectedPersistenceException>(() =>
+                store.UpsertRepositoryAsync(new(repositoryId, "failed update")).AsTask());
+            fail = false;
+
+            await store.CompleteIndexRunAsync(
+                new(repositoryId, pendingRun, started.AddSeconds(2), CodeIndexRunStatus.Completed, started.AddSeconds(3), [pluginId]),
+                new(repositoryId, pendingRun, []));
+            Assert.Equal(pendingRun, (await store.GetLatestPublicationAsync(repositoryId))!.IndexRunId);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task IdempotentRunningRetryDoesNotRewriteOriginalBaseline()
+    {
+        var path = TemporaryDatabasePath();
+        var repositoryId = new CodeRepositoryId("repo:idempotent-baseline");
+        var pluginId = new CodePluginId("plugin:idempotent-baseline");
+        var firstRun = new CodeIndexRunId("run:first");
+        var staleRun = new CodeIndexRunId("run:stale");
+        var secondRun = new CodeIndexRunId("run:second");
+        var started = DateTimeOffset.UtcNow;
+        var staleManifest = new CodeIndexRunManifest(
+            repositoryId, staleRun, started.AddSeconds(2), plugins: [pluginId]);
+        try
+        {
+            using (var store = new LatticeCodeGraphStore(path))
+            {
+                await store.UpsertRepositoryAsync(new(repositoryId));
+                await PublishEmptyAsync(store, repositoryId, pluginId, firstRun, started);
+                await store.StoreIndexRunAsync(staleManifest);
+                await PublishEmptyAsync(store, repositoryId, pluginId, secondRun, started.AddSeconds(3));
+                await store.StoreIndexRunAsync(staleManifest);
+            }
+
+            using var reopened = new LatticeCodeGraphStore(path);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.CompleteIndexRunAsync(
+                new(repositoryId, staleRun, started.AddSeconds(2), CodeIndexRunStatus.Completed, started.AddSeconds(5), [pluginId]),
+                new(repositoryId, staleRun, [])).AsTask());
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task DisposeWaitsForActiveMutationAndAllReadsRejectAfterward()
+    {
+        var path = TemporaryDatabasePath();
+        using var enteredCommit = new ManualResetEventSlim();
+        using var releaseCommit = new ManualResetEventSlim();
+        var block = false;
+        var repositoryId = new CodeRepositoryId("repo:dispose");
+        var store = new LatticeCodeGraphStore(path, null, point =>
+        {
+            if (!block || point != "before-commit")
+                return;
+            enteredCommit.Set();
+            releaseCommit.Wait(TimeSpan.FromSeconds(15));
+        });
+        try
+        {
+            block = true;
+            var mutation = Task.Run(async () =>
+                await store.UpsertRepositoryAsync(new(repositoryId)));
+            Assert.True(enteredCommit.Wait(TimeSpan.FromSeconds(15)));
+            var disposal = Task.Run(store.Dispose);
+            await Task.Delay(100);
+            Assert.False(disposal.IsCompleted);
+            releaseCommit.Set();
+            await mutation;
+            await disposal;
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+                store.GetRepositoryAsync(repositoryId).AsTask());
+        }
+        finally
+        {
+            releaseCommit.Set();
+            store.Dispose();
+            DeleteDatabase(path);
+        }
+    }
+
+    private static async Task PublishEmptyAsync(
+        LatticeCodeGraphStore store,
+        CodeRepositoryId repositoryId,
+        CodePluginId pluginId,
+        CodeIndexRunId runId,
+        DateTimeOffset started)
+    {
+        await store.StoreIndexRunAsync(new(repositoryId, runId, started, plugins: [pluginId]));
+        await store.CompleteIndexRunAsync(
+            new(repositoryId, runId, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+            new(repositoryId, runId, []));
+    }
+
     private static string TemporaryDatabasePath() =>
         Path.Combine(Path.GetTempPath(), $"hetu-lattice-{Guid.NewGuid():N}.ltdb");
 

@@ -87,7 +87,7 @@ already completed work.
 
 ## Marang Gate 0.5 / Batch 4 handoff
 
-The current `0.2.0-preview.3` baseline is usable as a bounded, provider-neutral
+The current `0.2.0-preview.4` baseline is usable as a bounded, provider-neutral
 graph source for Marang. This is an integration boundary and audit record; it
 does not make Marang workflow semantics part of Hetu.
 
@@ -342,7 +342,7 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 - **Package-reference nodes (M)** — `PackageReference` items become bounded
   syntax-evidence external dependency nodes with version and unexpanded
   condition metadata; do not claim evaluated MSBuild semantics.
-- **Solution-file scoping (M)** — parse `.sln` for canonical project sets,
+- **Solution-file scoping (M)** — parse `.sln` and `.slnx` for canonical project sets,
   configurations, and explicit solution dependencies instead of directory-walk
   inference. Project-reference edges remain the primary build-order evidence.
 

@@ -16,6 +16,32 @@ public sealed class HetuHostTests
     }
 
     [Fact]
+    public void Build_ValidatesRegistrationsBeforeCreatingStore()
+    {
+        var created = false;
+        var builder = new HetuHostBuilder()
+            .UseStore(() =>
+            {
+                created = true;
+                return new InMemoryCodeGraphStore();
+            })
+            .AddPlugin(new NamedPlugin("plugin:duplicate"))
+            .AddPlugin(new NamedPlugin("plugin:duplicate"));
+
+        Assert.Throws<ArgumentException>(builder.Build);
+        Assert.False(created);
+    }
+
+    [Fact]
+    public async Task Build_TransfersResourcesOnlyOnce()
+    {
+        var builder = new HetuHostBuilder().UseStore(new InMemoryCodeGraphStore());
+        await using var host = builder.Build();
+
+        Assert.Throws<InvalidOperationException>(builder.Build);
+    }
+
+    [Fact]
     public async Task IndexRepositoryAsync_PublishesAndQueriesWork()
     {
         var tempDir = System.IO.Path.Combine(

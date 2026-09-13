@@ -239,6 +239,49 @@ public sealed class CSharpCodeGraphPluginTests
     }
 
     [Fact]
+    public async Task IndexingLifecycle_RemovesProjectUnitWhenSolutionMembershipChanges()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-solution-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "A"));
+        Directory.CreateDirectory(Path.Combine(root, "B"));
+        var solutionPath = Path.Combine(root, "Example.sln");
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "A", "A.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await File.WriteAllTextAsync(Path.Combine(root, "A", "A.cs"), "namespace Example; public class A { }");
+            await File.WriteAllTextAsync(Path.Combine(root, "B", "B.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await File.WriteAllTextAsync(Path.Combine(root, "B", "B.cs"), "namespace Example; public class B { }");
+            await File.WriteAllTextAsync(solutionPath, Solution("A/A.csproj", "B/B.csproj"));
+
+            var repositoryId = new CodeRepositoryId("repo:solution-membership");
+            var store = new InMemoryCodeGraphStore();
+            var indexing = new CodeIndexingService(
+                new CodeRepositoryProviderRegistry([new FileSystemCodeRepositoryProvider()]),
+                new CodeGraphPluginRegistry([new CSharpCodeGraphPlugin()]),
+                store);
+            var descriptor = new CodeRepositoryDescriptor(repositoryId, root);
+            await indexing.IndexAsync(descriptor, new("run:both"));
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.B"));
+
+            await File.WriteAllTextAsync(solutionPath, Solution("A/A.csproj"));
+            var result = await indexing.IndexAsync(descriptor, new("run:a-only"));
+
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.A"));
+            Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.B"));
+            Assert.Equal(1, result.Diagnostics.IndexUnitsDeleted);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static string Solution(params string[] projects) =>
+            "Microsoft Visual Studio Solution File, Format Version 12.00\n" +
+            string.Join('\n', projects.Select((project, index) =>
+                $"Project(\"{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}\") = \"P{index}\", \"{project}\", \"{{{index + 1:D8}-1111-1111-1111-111111111111}}\"\nEndProject"));
+    }
+
+    [Fact]
     public async Task IndexingLifecycle_ChangedProjectReferenceRemovesDependencyEdge()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-reference-{Guid.NewGuid():N}");
@@ -844,6 +887,46 @@ public sealed class CSharpCodeGraphPluginTests
             node => node.QualifiedName == "Orphan.Orphan");
         Assert.Contains("csharp.solution.unlisted-project", extracted.Result.WarningCodes);
         Assert.Contains("csharp.solution.missing-project", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_SolutionXmlDefinesTheCanonicalProjectSet()
+    {
+        var plugin = new CSharpCodeGraphPlugin();
+        Assert.True(plugin.CanHandle("src/App.slnx"));
+        var extracted = await ExtractAsync(
+            ("src/App.slnx", """
+                <Solution>
+                  <Folder Name="/src/">
+                    <Project Path="App/App.csproj" />
+                  </Folder>
+                </Solution>
+                """),
+            ("src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/App/Program.cs", "namespace App; public class Program { }"),
+            ("src/Other/Other.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/Other/Other.cs", "namespace Other; public class OtherType { }"));
+
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "App.Program");
+        Assert.DoesNotContain(extracted.Nodes, node => node.QualifiedName == "Other.OtherType");
+        Assert.Contains("csharp.solution.unlisted-project", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PreservesCaseDistinctProjectPathsOnCaseSensitiveHosts()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var extracted = await ExtractAsync(
+            ("src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/App/Upper.cs", "namespace Upper; public class Value { }"),
+            ("src/app/app.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/app/Lower.cs", "namespace Lower; public class Value { }"));
+
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "Upper.Value");
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "Lower.Value");
+        Assert.Equal(2, extracted.UnitIds.Count);
     }
 
     [Fact]

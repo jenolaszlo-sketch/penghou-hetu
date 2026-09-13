@@ -201,6 +201,57 @@ public sealed class NativeGraphMirrorTests
         }
     }
 
+    [Fact]
+    public async Task NativeMirrorRebuildsAfterPublicationWhileTraversalIsDisabled()
+    {
+        var path = TemporaryDatabasePath();
+        var repositoryId = new CodeRepositoryId("repo:mirror-transition");
+        var pluginId = new CodePluginId("plugin:mirror-transition");
+        var firstRun = new CodeIndexRunId("run:before");
+        var secondRun = new CodeIndexRunId("run:after");
+        var started = DateTimeOffset.UtcNow;
+        var before = Node("before", "Example.Before");
+        var after = Node("after", "Example.After");
+        try
+        {
+            using (var enabled = new LatticeCodeGraphStore(
+                       path, new LatticeDbStoreOptions { UseNativeTraversal = true }))
+            {
+                await enabled.UpsertRepositoryAsync(new(repositoryId));
+                await enabled.StoreIndexRunAsync(new(repositoryId, firstRun, started, plugins: [pluginId]));
+                await enabled.StageIndexUnitAsync(new(
+                    new CodeFactOrigin(repositoryId, pluginId, "1.0.0", firstRun, new("unit:mirror")),
+                    [before]));
+                await enabled.CompleteIndexRunAsync(
+                    new(repositoryId, firstRun, started, CodeIndexRunStatus.Completed, started.AddSeconds(1), [pluginId]),
+                    new(repositoryId, firstRun, []));
+            }
+
+            using (var disabled = new LatticeCodeGraphStore(path))
+            {
+                await disabled.StoreIndexRunAsync(new(repositoryId, secondRun, started.AddSeconds(2), plugins: [pluginId]));
+                await disabled.StageIndexUnitAsync(new(
+                    new CodeFactOrigin(repositoryId, pluginId, "1.0.0", secondRun, new("unit:mirror")),
+                    [after]));
+                await disabled.CompleteIndexRunAsync(
+                    new(repositoryId, secondRun, started.AddSeconds(2), CodeIndexRunStatus.Completed, started.AddSeconds(3), [pluginId]),
+                    new(repositoryId, secondRun, []));
+            }
+
+            using var reopened = new LatticeCodeGraphStore(
+                path, new LatticeDbStoreOptions { UseNativeTraversal = true });
+            var result = await reopened.TraverseAsync(
+                repositoryId,
+                new CodeGraphTraversalQuery(after.Id, maxDepth: 1, maxNodes: 10, maxEdges: 10));
+            Assert.Contains(result.Nodes, node => node.Id == after.Id);
+            Assert.DoesNotContain(result.Nodes, node => node.Id == before.Id);
+        }
+        finally
+        {
+            DeleteDatabase(path);
+        }
+    }
+
     private static void AssertTraversalEqual(CodeGraphTraversalResult expected, CodeGraphTraversalResult actual)
     {
         Assert.Equal(expected.Truncated, actual.Truncated);

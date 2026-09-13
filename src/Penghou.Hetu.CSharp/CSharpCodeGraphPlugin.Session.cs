@@ -20,6 +20,7 @@ public sealed partial class CSharpCodeGraphPlugin
         {
             ArgumentNullException.ThrowIfNull(sink);
             var content = new SortedDictionary<string, string>(StringComparer.Ordinal);
+            var sourcesByPath = context.Sources.ToDictionary(source => source.Path, StringComparer.Ordinal);
             foreach (var source in context.Sources.OrderBy(source => source.Path, StringComparer.Ordinal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -38,9 +39,9 @@ public sealed partial class CSharpCodeGraphPlugin
             var projects = discovery.Projects;
             var projectByPath = projects.ToDictionary(
                 project => project.Path,
-                StringComparer.OrdinalIgnoreCase);
+                CSharpProjectDiscovery.PathComparer);
             var compilations = new Dictionary<string, CSharpCompilation>(
-                StringComparer.OrdinalIgnoreCase);
+                CSharpProjectDiscovery.PathComparer);
             var allDiagnostics = new List<Diagnostic>();
             var warningCodes = new HashSet<string>(StringComparer.Ordinal);
             warningCodes.UnionWith(discovery.Warnings);
@@ -62,7 +63,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 var references = CreatePlatformReferences().ToList();
                 var availableDependencies = project.ProjectReferences
                     .Where(compilations.ContainsKey)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    .ToHashSet(CSharpProjectDiscovery.PathComparer);
                 references.AddRange(availableDependencies
                     .Select(reference => compilations[reference].ToMetadataReference()));
                 if (project.ProjectReferences.Any(reference => !projectByPath.ContainsKey(reference)))
@@ -85,7 +86,7 @@ public sealed partial class CSharpCodeGraphPlugin
                     cancellationToken.ThrowIfCancellationRequested();
                     var root = await tree.GetRootAsync(cancellationToken).ConfigureAwait(false);
                     var model = compilation.GetSemanticModel(tree, ignoreAccessibility: true);
-                    var source = context.Sources.Single(value => value.Path == tree.FilePath);
+                    var source = sourcesByPath[tree.FilePath];
                     builder.AddFile(source);
                     builder.AddDeclarations(source.Path, root, model, cancellationToken);
                 }
@@ -113,13 +114,18 @@ public sealed partial class CSharpCodeGraphPlugin
             warningCodes.UnionWith(diagnostics
                 .Select(diagnostic => $"csharp.roslyn.{diagnostic.Id.ToLowerInvariant()}")
                 .Take(100));
+            var currentUnits = projects
+                .Select(project => new CodeIndexUnitId(CSharpProjectDiscovery.IndexUnitId(project.Path)))
+                .ToHashSet();
             var obsoleteUnits = context.Changes
                 .Where(change =>
                     change.Kind == CodeGraphSourceChangeKind.Deleted &&
                     change.Path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
                 .Select(change => new CodeIndexUnitId(
                     CSharpProjectDiscovery.IndexUnitId(change.Path)))
+                .Concat(context.PreviousIndexUnits.Where(unit => !currentUnits.Contains(unit)))
                 .Distinct()
+                .OrderBy(unit => unit.Value, StringComparer.Ordinal)
                 .ToArray();
             return new CodeGraphExtractionResult(
                 obsoleteUnits,
@@ -220,8 +226,8 @@ public sealed partial class CSharpCodeGraphPlugin
         ISet<string> warningCodes)
     {
         var ordered = new List<CSharpProjectModel>();
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(CSharpProjectDiscovery.PathComparer);
+        var visiting = new HashSet<string>(CSharpProjectDiscovery.PathComparer);
 
         void Visit(CSharpProjectModel project)
         {

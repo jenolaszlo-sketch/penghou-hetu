@@ -32,9 +32,9 @@ ANTLR parsers, hand-written parsers, or other deterministic extraction tools.
 
 ## Status
 
-Hetu has a working preview runtime, C# extractor, durable LatticeDb provider, and
-shared provider conformance suite. The API remains preview-quality and is
-currently built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
+Hetu 0.2.0-preview.4 has a working preview runtime, C# extractor, durable
+LatticeDb provider, and shared provider conformance suite. The API remains
+preview-quality and is built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
 semantic milestones and first-release invariants.
 
 ## Planned packages
@@ -146,9 +146,11 @@ identity for the repository, provider snapshot, plugin versions, source paths,
 and source hashes; unlike `IndexRunId`, it stays the same when an unchanged
 repository is indexed again under a new run ID.
 
-Plugins see the complete current source set plus exact source transitions. They
-remain responsible for choosing atomic index units and report obsolete unit IDs
-after extraction. Hetu refuses to complete a run if any streamed unit remains
+Plugins see the complete current source set, exact source transitions, and their
+unit identities from the previous successful publication. They remain responsible
+for choosing atomic index units and report obsolete unit IDs after extraction.
+This lets project-aware plugins remove units whose project remains on disk but
+leaves a solution. Hetu refuses to complete a run if any streamed unit remains
 buffered or rejected.
 
 Lifecycle execution is defensive at repository boundaries. Each executing
@@ -208,7 +210,7 @@ never guessed. More than 256 package references in one project keep the first
 Sources outside project directories fall into a deterministic loose-source
 project. Project-reference compilations and `depends-on` edges are created in
 dependency order, while missing and cyclic references are diagnosed rather
-than guessed. When `.sln` files are present, the union of their listed projects
+than guessed. When `.sln` or `.slnx` files are present, the union of their listed projects
 forms the canonical set: unlisted projects are skipped with
 `csharp.solution.unlisted-project` and listed-but-absent projects report
 `csharp.solution.missing-project`. Solution configurations are not evaluated.
@@ -261,6 +263,27 @@ if (view is not null)
 }
 ```
 
+Handle freshness, ambiguity, and traversal limits explicitly when assembling
+consumer context:
+
+```csharp
+var freshness = await host.CheckFreshnessAsync(repository);
+if (freshness.Status is CodeFreshnessStatus.Stale or CodeFreshnessStatus.SourceConflict)
+    throw new InvalidOperationException("Reindex before assembling context.");
+
+var view = await host.OpenLatestPublicationAsync(repository.Id)
+    ?? throw new InvalidOperationException("The repository has no publication.");
+var lookup = await view.FindSymbolAsync("Example.OrderService");
+if (lookup.Result.Candidates.Count != 1)
+    throw new InvalidOperationException("The symbol is missing or ambiguous.");
+
+var neighborhood = await view.GetNeighborhoodAsync(
+    lookup.Result.Candidates[0].Id,
+    options: new CodeGraphQueryOptions(maxDepth: 3, maxNodes: 100, maxEdges: 200));
+if (neighborhood.Result.Truncated)
+    Console.WriteLine($"Context was truncated: {neighborhood.Result.TruncationReason}");
+```
+
 Batch symbol resolution is capped at 100 distinct qualified names and batch
 impact analysis at 32 distinct seeds; each impact traversal keeps its own node,
 edge, and depth bounds. Convenience queries also expose declarations in one
@@ -270,7 +293,8 @@ silently choose among ambiguous symbols.
 
 `HetuHostBuilder.WithIndexingOptions(...)` establishes host defaults that each
 indexing call may override. `UseStore(store)` transfers ownership of a supplied
-store instance to the resulting host. `HetuHost.CheckHealthAsync()` provides a
+store instance to the resulting host. A builder creates one host so ownership
+cannot be transferred twice. `HetuHost.CheckHealthAsync()` provides a
 content-free readiness result covering the graph store and the deterministically
 ordered plugin/provider composition. Stores that do not implement the optional
 `ICodeGraphStoreHealthCheck` contract report `Unknown`, not a guessed healthy
@@ -280,7 +304,7 @@ state.
 
 `Penghou.Hetu.LatticeDb` provides `LatticeCodeGraphStore`, an embedded durable
 implementation of the same `ICodeGraphStore` contract. It uses the community
-LatticeDbSharp 0.1.1 binding for LatticeDB (an embedded single-file
+LatticeDbSharp 0.2.0 binding for LatticeDB (an embedded single-file
 property-graph database with Cypher, vector search, full-text search, ACID
 transactions, and durable streams), validates its schema version on open,
 persists mutations transactionally, restores state after process restart, and
@@ -289,9 +313,10 @@ caller-supplied file path, and the verified Linux x64, Windows x64, and macOS
 ARM64 native runtimes ship inside the binding package, so hosts reference no separate
 native runtime package and need no OpenSSL installation. The store keeps a
 durable command log in LatticeDB and serves queries from a materialized
-in-memory projection; native graph structure (edges, property indexes,
-vector/full-text retrieval) becomes available to future versions as the
-managed binding surface grows, without changing Hetu's graph contracts.
+in-memory projection. Optional native traversal mirrors serve unfiltered graph
+traversals and are invalidated on every publication, including publications made
+while the option is disabled. Health details report whether queries use the
+projection or verified native mirrors.
 
 A file-backed host is one builder call away; the database is a single file,
 so each repository maps naturally to one path:
