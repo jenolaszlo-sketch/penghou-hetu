@@ -97,7 +97,7 @@ public sealed record CodeRepositoryIndexState
             .ThenBy(source => source.SourcePath, StringComparer.Ordinal)
             .ToArray();
         if (Sources
-            .GroupBy(source => $"{source.PluginId.Value}\n{source.SourcePath}", StringComparer.Ordinal)
+            .GroupBy(source => new PluginSourceKey(source.PluginId, source.SourcePath))
             .Any(group => group.Count() > 1))
         {
             throw new ArgumentException(
@@ -216,6 +216,34 @@ public enum CodeGraphTruncationReason
     MaxEdges = 4
 }
 
+/// <summary>A bounded, deterministically ordered name-pattern match.</summary>
+/// <remarks>Matching is a case-insensitive ordinal substring search over qualified
+/// and display names. A future native full-text index may accelerate the scan
+/// without changing this contract.</remarks>
+public sealed record CodeNamePatternResult
+{
+    public const int DefaultMaxResults = 50;
+    public const int AbsoluteMaxResults = 200;
+
+    public CodeNamePatternResult(
+        IReadOnlyList<CodeGraphNode> candidates,
+        int totalMatches)
+    {
+        Candidates = candidates ?? throw new ArgumentNullException(nameof(candidates));
+        if (totalMatches < 0)
+            throw new ArgumentOutOfRangeException(nameof(totalMatches));
+        if (candidates.Count > totalMatches)
+            throw new ArgumentException(
+                "Candidates cannot exceed the total match count.",
+                nameof(candidates));
+        TotalMatches = totalMatches;
+    }
+
+    public IReadOnlyList<CodeGraphNode> Candidates { get; }
+    public int TotalMatches { get; }
+    public bool Truncated => TotalMatches > Candidates.Count;
+}
+
 /// <summary>A bounded, deterministically ordered graph traversal result.</summary>
 public sealed record CodeGraphTraversalResult
 {
@@ -311,6 +339,15 @@ public sealed record CodeGraphMultiTraversalResult(
 {
     public bool Truncated => Results.Values.Any(result => result.Truncated);
 }
+
+/// <summary>
+/// Test entry points reaching each seed, keyed by seed node identity. A node
+/// counts as a test only when it carries an explicit test marker property;
+/// test-ness is never inferred from names or locations.
+/// </summary>
+public sealed record CodeAffectedTestsResult(
+    IReadOnlyDictionary<string, IReadOnlyList<CodeGraphNode>> TestsBySeed,
+    bool Truncated);
 
 /// <summary>Privacy-safe counters from one completed index-unit ingestion.</summary>
 public sealed record CodeGraphIngestionDiagnostics(

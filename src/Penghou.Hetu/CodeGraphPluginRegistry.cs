@@ -83,6 +83,11 @@ public sealed class CodeGraphPluginSelectionException : Exception
 }
 
 /// <summary>Fluent standalone construction for the Hetu plugin registry.</summary>
+/// <remarks>
+/// Prefer <see cref="HetuHostBuilder"/> for complete hosts. Use this builder
+/// only when composing registries manually around a caller-owned store or a
+/// standalone <see cref="CodeIndexingService"/>.
+/// </remarks>
 public sealed class HetuBuilder
 {
     private readonly List<ICodeGraphPlugin> _plugins = [];

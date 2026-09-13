@@ -130,8 +130,8 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
         }
 
         var previous = (previousManifests ?? [])
-            .ToDictionary(ManifestKey, StringComparer.Ordinal);
-        var currentKeys = new HashSet<string>(StringComparer.Ordinal);
+            .ToDictionary(ManifestKey);
+        var currentKeys = new HashSet<PluginSourceKey>();
         var items = new List<CodeIndexPlanItem>();
         var repositoryEntries = 0;
         var unsupportedEntries = 0;
@@ -262,6 +262,6 @@ public sealed class CodeIndexPlanner(CodeGraphPluginRegistry plugins)
         return ($"sha256:{Convert.ToHexStringLower(hasher.GetHashAndReset())}", bytesRead);
     }
 
-    private static string ManifestKey(CodeSourceManifest manifest) =>
-        $"{manifest.PluginId.Value}\n{manifest.SourcePath}";
+    private static PluginSourceKey ManifestKey(CodeSourceManifest manifest) =>
+        new(manifest.PluginId, manifest.SourcePath);
 }

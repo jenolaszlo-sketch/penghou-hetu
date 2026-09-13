@@ -60,7 +60,12 @@ public sealed class CodeGraphQueryService
     public CodeGraphPublicationQuery Bind(CodeGraphPublication publication) =>
         new(this, publication ?? throw new ArgumentNullException(nameof(publication)));
 
-    public async ValueTask<CodeSymbolLookupResult> FindSymbolAsync(
+    /// <summary>
+    /// Looks up candidate symbols by exact qualified name, preserving
+    /// ambiguity. Named for the lookup key: the store-level
+    /// <c>FindSymbolAsync</c> takes a semantic symbol id instead.
+    /// </summary>
+    public async ValueTask<CodeSymbolLookupResult> FindSymbolsByQualifiedNameAsync(
         CodeRepositoryId repositoryId,
         string qualifiedName,
         CancellationToken cancellationToken = default)
@@ -75,8 +80,36 @@ public sealed class CodeGraphQueryService
         return new(candidates.OrderBy(node => node.Id.Value, StringComparer.Ordinal).ToArray());
     }
 
+    [Obsolete("Use FindSymbolsByQualifiedNameAsync, which names the lookup key explicitly.")]
+    public ValueTask<CodeSymbolLookupResult> FindSymbolAsync(
+        CodeRepositoryId repositoryId,
+        string qualifiedName,
+        CancellationToken cancellationToken = default) =>
+        FindSymbolsByQualifiedNameAsync(repositoryId, qualifiedName, cancellationToken);
+
+    /// <summary>
+    /// Finds candidate symbols by name-pattern match for ranking by the caller.
+    /// <paramref name="maxResults"/> cannot exceed
+    /// <see cref="CodeNamePatternResult.AbsoluteMaxResults"/>.
+    /// </summary>
+    public async ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
+        CodeRepositoryId repositoryId,
+        string pattern,
+        int maxResults = CodeNamePatternResult.DefaultMaxResults,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repositoryId);
+        if (string.IsNullOrWhiteSpace(pattern))
+            throw new ArgumentException("Search pattern is required.", nameof(pattern));
+        return await _store.FindNodesByNamePatternAsync(
+            repositoryId,
+            pattern,
+            maxResults,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<CodeGraphQueryEnvelope<CodeSymbolLookupResult>?>
-        FindSymbolWithProvenanceAsync(
+        FindSymbolsByQualifiedNameWithProvenanceAsync(
             CodeRepositoryId repositoryId,
             string qualifiedName,
             CancellationToken cancellationToken = default)
@@ -96,6 +129,14 @@ public sealed class CodeGraphQueryService
                 new(envelope.Result),
                 envelope.Provenance);
     }
+
+    [Obsolete("Use FindSymbolsByQualifiedNameWithProvenanceAsync, which names the lookup key explicitly.")]
+    public ValueTask<CodeGraphQueryEnvelope<CodeSymbolLookupResult>?>
+        FindSymbolWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            string qualifiedName,
+            CancellationToken cancellationToken = default) =>
+        FindSymbolsByQualifiedNameWithProvenanceAsync(repositoryId, qualifiedName, cancellationToken);
 
     public ValueTask<IReadOnlyList<CodeGraphDeclaration>> FindDeclarationsAsync(
         CodeRepositoryId repositoryId,
@@ -117,37 +158,37 @@ public sealed class CodeGraphQueryService
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.References], options, cancellationToken);
+            CodeGraphTraversalPresets.References, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindCallersAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindCalleesAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindImplementationsAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Implements, CodeEdgeKinds.Inherits], options, cancellationToken);
+            CodeGraphTraversalPresets.Implementations, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindDependenciesAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> FindDependentsAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
     public ValueTask<CodeGraphTraversalResult> GetNeighborhoodAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
@@ -171,12 +212,58 @@ public sealed class CodeGraphQueryService
             options,
             cancellationToken);
 
+    /// <summary>
+    /// Returns the incoming impact set: nodes that reference, call, implement,
+    /// inherit, or depend on <paramref name="nodeId"/>. Outgoing edges are
+    /// intentionally excluded; use neighborhood or dependency traversals for those.
+    /// </summary>
     public ValueTask<CodeGraphTraversalResult> GetImpactSetAsync(
         CodeRepositoryId repositoryId, CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
         TraverseAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.References, CodeEdgeKinds.Calls, CodeEdgeKinds.Implements,
-             CodeEdgeKinds.Inherits, CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.ImpactSet, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindReferencesWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
+            CodeGraphTraversalPresets.References, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindCallersWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindCalleesWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Outgoing,
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindImplementationsWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
+            CodeGraphTraversalPresets.Implementations, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindDependenciesWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Outgoing,
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> FindDependentsWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
+
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?> GetImpactSetWithProvenanceAsync(
+        CodeRepositoryId repositoryId, CodeNodeId nodeId,
+        CodeGraphQueryOptions? options = null, CancellationToken cancellationToken = default) =>
+        TraverseWithProvenanceAsync(repositoryId, nodeId, CodeGraphDirection.Incoming,
+            CodeGraphTraversalPresets.ImpactSet, options, cancellationToken);
 
     public async ValueTask<CodeGraphMultiTraversalResult> GetImpactSetsAsync(
         CodeRepositoryId repositoryId,
@@ -215,7 +302,7 @@ public sealed class CodeGraphQueryService
             StringComparer.Ordinal);
         foreach (var name in names)
         {
-            results[name] = await FindSymbolAsync(
+            results[name] = await FindSymbolsByQualifiedNameAsync(
                 repositoryId,
                 name,
                 cancellationToken).ConfigureAwait(false);
@@ -255,7 +342,7 @@ public sealed class CodeGraphQueryService
         foreach (var name in names)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var envelope = await FindSymbolWithProvenanceAsync(
+            var envelope = await FindSymbolsByQualifiedNameWithProvenanceAsync(
                 repositoryId,
                 name,
                 cancellationToken).ConfigureAwait(false);
@@ -267,7 +354,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "resolve-symbols",
+                CodeQueryOperations.ResolveSymbols,
                 QualifiedNames: names),
             results,
             DistinctProvenance(provenance));
@@ -280,6 +367,7 @@ public sealed class CodeGraphQueryService
     public async ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsInFileAsync(
         CodeRepositoryId repositoryId,
         string sourcePath,
+        CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
@@ -296,8 +384,8 @@ public sealed class CodeGraphQueryService
             repositoryId,
             fileNode.Id,
             CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Declares],
-            new(maxDepth: 1, maxNodes: 500, maxEdges: 1000),
+            CodeGraphTraversalPresets.Declarations,
+            options ?? new(maxDepth: 1, maxNodes: 500, maxEdges: 1000),
             cancellationToken).ConfigureAwait(false);
 
         var symbolIds = traversal.Nodes
@@ -329,10 +417,12 @@ public sealed class CodeGraphQueryService
         GetDeclarationsInFileWithProvenanceAsync(
             CodeRepositoryId repositoryId,
             string sourcePath,
+            CodeGraphQueryOptions? options = null,
             CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(repositoryId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        options ??= new(maxDepth: 1, maxNodes: 500, maxEdges: 1000);
         var publication = await _store.GetLatestPublicationAsync(
             repositoryId,
             cancellationToken).ConfigureAwait(false);
@@ -350,7 +440,7 @@ public sealed class CodeGraphQueryService
             return new(
                 publication,
                 new CodeGraphQueryDescriptor(
-                    "declarations-in-file",
+                    CodeQueryOperations.DeclarationsInFile,
                     QualifiedName: sourcePath),
                 [],
                 []);
@@ -359,10 +449,10 @@ public sealed class CodeGraphQueryService
         var traversalQuery = new CodeGraphTraversalQuery(
             fileNode.Id,
             CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Declares],
-            maxDepth: 1,
-            maxNodes: 500,
-            maxEdges: 1000);
+            CodeGraphTraversalPresets.Declarations,
+            maxDepth: options.MaxDepth,
+            maxNodes: options.MaxNodes,
+            maxEdges: options.MaxEdges);
         var traversal = await _store.TraverseWithProvenanceAsync(
             repositoryId,
             traversalQuery,
@@ -397,7 +487,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "declarations-in-file",
+                CodeQueryOperations.DeclarationsInFile,
                 QualifiedName: sourcePath,
                 Traversal: traversalQuery),
             ordered,
@@ -431,7 +521,7 @@ public sealed class CodeGraphQueryService
             repositoryId,
             projectNode.Id,
             CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Contains, CodeEdgeKinds.Declares],
+            CodeGraphTraversalPresets.Containment,
             options,
             cancellationToken).ConfigureAwait(false);
 
@@ -464,7 +554,7 @@ public sealed class CodeGraphQueryService
             return new(
                 publication,
                 new CodeGraphQueryDescriptor(
-                    "public-surface",
+                    CodeQueryOperations.PublicSurface,
                     QualifiedName: projectPath),
                 [],
                 []);
@@ -474,7 +564,7 @@ public sealed class CodeGraphQueryService
         var traversalQuery = new CodeGraphTraversalQuery(
             projectNode.Id,
             CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Contains, CodeEdgeKinds.Declares],
+            CodeGraphTraversalPresets.Containment,
             options.EvidenceKinds,
             options.MaxDepth,
             options.MaxNodes,
@@ -490,7 +580,7 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "public-surface",
+                CodeQueryOperations.PublicSurface,
                 QualifiedName: projectPath,
                 Traversal: traversalQuery),
             result,
@@ -529,13 +619,7 @@ public sealed class CodeGraphQueryService
         var queries = seeds.Select(seed => new CodeGraphTraversalQuery(
             seed,
             CodeGraphDirection.Incoming,
-            [
-                CodeEdgeKinds.References,
-                CodeEdgeKinds.Calls,
-                CodeEdgeKinds.Implements,
-                CodeEdgeKinds.Inherits,
-                CodeEdgeKinds.DependsOn
-            ],
+            CodeGraphTraversalPresets.ImpactSet,
             options.EvidenceKinds,
             options.MaxDepth,
             options.MaxNodes,
@@ -557,11 +641,61 @@ public sealed class CodeGraphQueryService
         return new(
             publication,
             new CodeGraphQueryDescriptor(
-                "impact-sets",
+                CodeQueryOperations.ImpactSets,
                 Traversals: queries),
             new CodeGraphMultiTraversalResult(results),
             DistinctProvenance(provenance));
     }
+
+    /// <summary>
+    /// Returns the test entry points that reach each seed through incoming
+    /// calls or references. Each seed keeps its own traversal bounds; when a
+    /// traversal truncates, tests for that seed may be partial.
+    /// </summary>
+    public async ValueTask<CodeAffectedTestsResult?> GetAffectedTestsAsync(
+        CodeRepositoryId repositoryId,
+        IReadOnlyCollection<CodeNodeId> seedNodeIds,
+        CodeGraphQueryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = await GetAffectedTestsWithProvenanceAsync(
+            repositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false);
+        return envelope?.Result;
+    }
+
+    public async ValueTask<CodeGraphQueryEnvelope<CodeAffectedTestsResult>?>
+        GetAffectedTestsWithProvenanceAsync(
+            CodeRepositoryId repositoryId,
+            IReadOnlyCollection<CodeNodeId> seedNodeIds,
+            CodeGraphQueryOptions? options = null,
+            CancellationToken cancellationToken = default)
+    {
+        var envelope = await GetImpactSetsWithProvenanceAsync(
+            repositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false);
+        if (envelope is null)
+            return null;
+        var tests = new Dictionary<string, IReadOnlyList<CodeGraphNode>>(
+            StringComparer.Ordinal);
+        foreach (var (seed, result) in envelope.Result.Results)
+            tests[seed] = result.Nodes.Where(IsTestMethod).ToArray();
+        return new(
+            envelope.Publication,
+            new CodeGraphQueryDescriptor(
+                CodeQueryOperations.AffectedTests,
+                Traversals: envelope.Query.Traversals),
+            new CodeAffectedTestsResult(tests, envelope.Result.Truncated),
+            envelope.Provenance);
+    }
+
+    internal static bool IsTestMethod(CodeGraphNode node) =>
+        node.Properties.TryGetValue(CodePropertyKeys.TestMethod, out var value) &&
+        value is CodeBooleanProperty { Value: true };
 
     private ValueTask<CodeGraphTraversalResult> TraverseAsync(
         CodeRepositoryId repositoryId,
@@ -587,7 +721,7 @@ public sealed class CodeGraphQueryService
             cancellationToken);
     }
 
-    internal ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
+    public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>?>
         TraverseWithProvenanceAsync(
             CodeRepositoryId repositoryId,
             CodeNodeId nodeId,
@@ -619,7 +753,7 @@ public sealed class CodeGraphQueryService
                 node.Kind != CodeNodeKinds.Project &&
                 node.Kind != CodeNodeKinds.File)
             .Where(node =>
-                node.Properties.TryGetValue("access", out var access) &&
+                 node.Properties.TryGetValue(CodePropertyKeys.Access, out var access) &&
                 access is CodeTextProperty { Value: "public" })
             .OrderBy(
                 node => node.QualifiedName ?? node.Name,

@@ -95,19 +95,85 @@ public sealed class CodeIndexingService
 {
     private readonly CodeRepositoryProviderRegistry _repositories;
     private readonly CodeGraphPluginRegistry _plugins;
-    private readonly ICodeGraphIndexStore _store;
+    private readonly ICodeGraphStore _store;
     private readonly TimeProvider _timeProvider;
 
     public CodeIndexingService(
         CodeRepositoryProviderRegistry repositories,
         CodeGraphPluginRegistry plugins,
-        ICodeGraphIndexStore store,
+        ICodeGraphStore store,
         TimeProvider? timeProvider = null)
     {
         _repositories = repositories ?? throw new ArgumentNullException(nameof(repositories));
         _plugins = plugins ?? throw new ArgumentNullException(nameof(plugins));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Compares live repository sources with the latest published source state
+    /// without staging or publishing anything. <see cref="CodeFreshnessStatus.Unknown"/>
+    /// means the repository was never indexed; <see cref="CodeFreshnessStatus.SourceConflict"/>
+    /// means live sources changed underneath the check itself.
+    /// </summary>
+    public async ValueTask<CodeFreshnessResult> CheckFreshnessAsync(
+        CodeRepositoryDescriptor descriptor,
+        CodeIndexingOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        options ??= new CodeIndexingOptions();
+        await using var repository = await _repositories.OpenAsync(descriptor, cancellationToken)
+            .ConfigureAwait(false);
+        var previousState = await _store.GetLatestIndexStateAsync(descriptor.Id, cancellationToken)
+            .ConfigureAwait(false);
+        if (previousState is null)
+            return new(CodeFreshnessStatus.Unknown, null, 0, 0, 0, 0);
+        var publication = new CodeGraphPublication(
+            previousState.RepositoryId,
+            previousState.IndexRunId,
+            previousState.SnapshotIdentity,
+            previousState.IsConsistentSnapshot,
+            previousState.IndexIdentity);
+        var planner = new CodeIndexPlanner(_plugins);
+        CodeIndexPlan plan;
+        try
+        {
+            plan = await planner.CreatePlanAsync(
+                repository,
+                previousState.Sources,
+                new CodeIndexPlanningOptions(
+                    options.Planning.Enumeration,
+                    options.Planning.PluginIds,
+                    options.MaxSourceBytes,
+                    options.MaxTotalSourceBytes),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodeSourceChangedDuringIndexingException)
+        {
+            return new(CodeFreshnessStatus.SourceConflict, publication, 0, 0, 0, 0);
+        }
+        var changed = 0;
+        var unchanged = 0;
+        var added = 0;
+        var deleted = 0;
+        foreach (var item in plan.Items)
+        {
+            switch (item.Status)
+            {
+                case CodeIndexPlanStatus.New: added++; break;
+                case CodeIndexPlanStatus.Changed: changed++; break;
+                case CodeIndexPlanStatus.Unchanged: unchanged++; break;
+                case CodeIndexPlanStatus.Deleted: deleted++; break;
+            }
+        }
+        return new(
+            added + changed + deleted > 0 ? CodeFreshnessStatus.Stale : CodeFreshnessStatus.Fresh,
+            publication,
+            added,
+            changed,
+            unchanged,
+            deleted);
     }
 
     public async ValueTask<CodeIndexingResult> IndexAsync(
@@ -163,6 +229,30 @@ public sealed class CodeIndexingService
                 item.Manifest.PluginId == plugin.Id &&
                 item.Status != CodeIndexPlanStatus.Unchanged))
             .ToArray();
+        if (executingPlugins.Length == 0 && previousState is not null)
+        {
+            // Nothing changed: reuse the existing publication instead of
+            // minting a run that would supersede concurrent runs for no
+            // content change.
+            var unchanged = CreateDiagnostics(
+                descriptor.Id, runId, CodeIndexRunStatus.Completed, plan, ingestion,
+                0, 0, plan.HashBytesRead,
+                planningDuration, TimeSpan.Zero, TimeSpan.Zero,
+                pluginDiagnostics);
+            Report(diagnostics, unchanged);
+            return new(
+                plan,
+                unchanged,
+                new CodeGraphPublication(
+                    previousState.RepositoryId,
+                    previousState.IndexRunId,
+                    previousState.SnapshotIdentity,
+                    previousState.IsConsistentSnapshot,
+                    previousState.IndexIdentity),
+                previousState);
+        }
+        var publishedUnits = await _store.GetPublishedUnitsAsync(descriptor.Id, cancellationToken)
+            .ConfigureAwait(false);
         var running = new CodeIndexRunManifest(
             descriptor.Id,
             runId,
@@ -195,7 +285,7 @@ public sealed class CodeIndexingService
                 try
                 {
                     context = CreateContext(
-                        descriptor, runId, plugin, plan, materialized, previousState);
+                        descriptor, runId, plugin, plan, materialized, previousState, publishedUnits);
                     await using var session = await plugin.CreateSessionAsync(context, cancellationToken)
                         .ConfigureAwait(false);
                     var scopedSink = new PluginScopedSink(
@@ -313,8 +403,9 @@ public sealed class CodeIndexingService
         CodeIndexRunId runId,
         ICodeGraphPlugin plugin,
         CodeIndexPlan plan,
-        IReadOnlyDictionary<string, MaterializedSource> materialized,
-        CodeRepositoryIndexState? previousState)
+        IReadOnlyDictionary<PluginSourceKey, MaterializedSource> materialized,
+        CodeRepositoryIndexState? previousState,
+        IReadOnlyList<CodeIndexUnitReplacement> publishedUnits)
     {
         var previous = previousState?.Sources
             .Where(source => source.PluginId == plugin.Id)
@@ -324,7 +415,7 @@ public sealed class CodeIndexingService
             .Where(item => item.Source is not null)
             .Select(item =>
             {
-                var source = materialized[$"{plugin.Id.Value}\n{item.Manifest.SourcePath}"];
+                var source = materialized[new PluginSourceKey(plugin.Id, item.Manifest.SourcePath)];
                 return new CodeGraphSource(
                     item.Manifest.SourcePath,
                     item.Manifest.SourceHash,
@@ -346,7 +437,18 @@ public sealed class CodeIndexingService
             (CodeGraphSourceChangeKind)item.Status,
             previous.GetValueOrDefault(item.Manifest.SourcePath)?.SourceHash,
             item.Status == CodeIndexPlanStatus.Deleted ? null : item.Manifest.SourceHash)).ToArray();
-        return new(descriptor.Id, descriptor.Location, runId, sources, descriptor.Settings, changes);
+        var previousUnits = publishedUnits
+            .Where(unit => unit.Origin.PluginId == plugin.Id)
+            .Select(unit => unit.Origin.IndexUnitId)
+            .ToArray();
+        return new(
+            descriptor.Id,
+            descriptor.Location,
+            runId,
+            sources,
+            descriptor.Settings,
+            changes,
+            previousUnits);
     }
 
     private static CodeRepositoryIndexState CreateState(
@@ -462,7 +564,7 @@ public sealed class CodeIndexingService
             result.ObsoleteIndexUnits.Count,
             result.WarningCodes.ToArray());
 
-    private static async ValueTask<IReadOnlyDictionary<string, MaterializedSource>> MaterializeSourcesAsync(
+    private static async ValueTask<IReadOnlyDictionary<PluginSourceKey, MaterializedSource>> MaterializeSourcesAsync(
         ICodeRepositorySource repository,
         CodeIndexPlan plan,
         IReadOnlyList<ICodeGraphPlugin> plugins,
@@ -470,7 +572,7 @@ public sealed class CodeIndexingService
         CancellationToken cancellationToken)
     {
         var pluginIds = plugins.Select(plugin => plugin.Id).ToHashSet();
-        var result = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
+        var result = new Dictionary<PluginSourceKey, MaterializedSource>();
         var sourcesByPath = new Dictionary<string, MaterializedSource>(StringComparer.Ordinal);
         var totalBytes = plan.HashBytesRead;
         var buffer = new byte[81920];
@@ -481,7 +583,7 @@ public sealed class CodeIndexingService
             if (sourcesByPath.TryGetValue(entry.Path, out var existing))
             {
                 result.Add(
-                    $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                    new PluginSourceKey(item.Manifest.PluginId, item.Manifest.SourcePath),
                     existing);
                 continue;
             }
@@ -518,7 +620,7 @@ public sealed class CodeIndexingService
             var materialized = new MaterializedSource(content.Array!, content.Count);
             sourcesByPath.Add(entry.Path, materialized);
             result.Add(
-                $"{item.Manifest.PluginId.Value}\n{item.Manifest.SourcePath}",
+                new PluginSourceKey(item.Manifest.PluginId, item.Manifest.SourcePath),
                 materialized);
         }
 

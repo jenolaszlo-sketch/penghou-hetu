@@ -4,7 +4,7 @@
 
 Build a local-first, language-neutral code knowledge graph that gives Solo and
 other .NET consumers deterministic repository comprehension without coupling
-the graph model to Roslyn, LadybugDB, or any model provider.
+the graph model to Roslyn, LatticeDB, or any model provider.
 
 The central invariant is:
 
@@ -55,7 +55,7 @@ Milestones 1 through 7 established the working foundation:
   extraction sessions, batches, and validation;
 - deterministic repository discovery, source hashing, incremental planning,
   bounded indexing, diagnostics, and plugin registration;
-- an in-memory graph store and a durable LadybugDB provider sharing a store
+- an in-memory graph store and a durable LatticeDB provider sharing a store
   conformance suite;
 - a Roslyn C# plugin with provider-neutral SDK-style project discovery,
   declarations, symbols, containment, partial types, overload-safe identities,
@@ -63,7 +63,7 @@ Milestones 1 through 7 established the working foundation:
 - exact symbol and declaration lookup plus bounded provider-neutral traversal
   and impact-query operations;
 - run-scoped staging with atomic graph/state publication, failure cleanup, and
-  durable restart semantics shared by memory and Ladybug providers;
+  durable restart semantics shared by memory and LatticeDb providers;
 - publication-bound query envelopes with node, declaration, and edge
   contributors plus explicit traversal truncation diagnostics;
 - deterministic publication receipts and source-state identities, fail-on-change
@@ -72,10 +72,10 @@ Milestones 1 through 7 established the working foundation:
 - a cohesive host facade with host-default indexing bounds, caller-supplied
   store ownership, and provider-neutral content-free readiness checks;
 - separate indexing and reader contracts, cached in-memory materialization,
-  adjacency indexes, and incremental Ladybug mutation handling;
+  adjacency indexes, and incremental LatticeDb mutation handling;
 - native-provider CI, restart and corruption coverage, and recorded persistence
   benchmarks.
-- Ladybug replay distinguishes the latest completed publication from older
+- LatticeDb replay distinguishes the latest completed publication from older
   completed run history. Reopening after multiple successful index runs restores
   every immutable run manifest while only the latest run restores the atomic
   repository index state; historical completion is never routed through the
@@ -87,7 +87,7 @@ already completed work.
 
 ## Marang Gate 0.5 / Batch 4 handoff
 
-The current `0.2.0-preview.3` baseline is usable as a bounded, provider-neutral
+The current `0.2.0-preview.4` baseline is usable as a bounded, provider-neutral
 graph source for Marang. This is an integration boundary and audit record; it
 does not make Marang workflow semantics part of Hetu.
 
@@ -107,28 +107,41 @@ does not make Marang workflow semantics part of Hetu.
   the planning/extraction boundary (`CodeGraphFacts.cs`,
   `CodeIndexingLifecycle.cs`).
 - Run-scoped staging, atomic publication, bounded plugin concurrency, and
-  durable Ladybug restart/recovery with corruption and interrupted-transaction
-  coverage (`InMemoryCodeGraphStore.cs`, `LadybugCodeGraphStore.cs`, and their
+  durable LatticeDB restart/recovery with corruption and interrupted-transaction
+  coverage (`InMemoryCodeGraphStore.cs`, `LatticeCodeGraphStore.cs`, and their
   lifecycle/provider tests).
 
 ### Reusable upstream follow-ups
 
 These should remain provider-neutral Hetu work, ordered as Gate 0.5 risks:
 
-1. **P1 — Immutable historical graph snapshots or export references.** A
-   publication-bound view fails when the latest publication moves, but Hetu
-   retains only the latest graph. Add a bounded, integrity-checked snapshot or
-   export reference so a later query can reproduce the original result.
-2. **P1 — Repository/workspace revisions and freshness semantics.** Promote the
-   existing workspace/revision design into a contract with explicit fresh,
-   stale, and source-conflict states; keep the published graph separate from a
-   working revision. See the [workspace experiment](docs/workspaces-design.md).
-3. **P1 — Affected-test query.** Add provider-neutral test-to-production
-   relationships or an equivalent bounded derived query; the current C# graph
-   has no reliable affected-test result.
-4. **P1 — Same-repository concurrent publication ordering.** Define admission,
-   conflict, or monotonic ordering for concurrent indexing runs; the store
-   serializes mutations but does not define which competing completed run wins.
+1. **P1 — Immutable historical graph snapshots or export references
+   (landed on `feature/latticedb-provider`).** A publication-bound view fails
+   when the latest publication moves, but Hetu retains only the latest graph.
+   `CodePublicationSnapshot` now captures one publication as bounded,
+   schema-versioned, SHA-256 integrity-checked units that re-import through
+   the normal staging path, so a later query reproduces the original result.
+   Serialized transport (index-in-CI, query-locally) remains Tier C
+   follow-up work.
+2. **P1 — Repository/workspace revisions and freshness semantics (freshness
+   landed on `feature/latticedb-provider`).** `CodeIndexingService.CheckFreshnessAsync`
+   compares live sources with the latest published state and reports
+   unknown/fresh/stale/source-conflict with per-status counts, bound to the
+   compared publication, without staging or publishing anything. Working
+   revisions atop a pinned publication remain workspace-experiment work (see
+   the [workspace experiment](docs/workspaces-design.md)).
+3. **P1 — Affected-test query (landed on `feature/latticedb-provider`).**
+   The C# plugin marks exact allowlisted test-framework methods with a
+   `test-method` property (never inferred), and `GetAffectedTestsAsync`
+   derives per-seed bounded test sets from incoming calls/references on both
+   the service and publication-bound query surfaces.
+4. **P1 — Same-repository concurrent publication ordering (landed on
+   `feature/latticedb-provider`).** Mutations stay serialized, and completion
+   is now optimistic: a run records the publication it planned against at
+   registration, and completing after another publication lands fails
+   explicitly instead of silently winning. Retries use a new run id against
+   the latest publication. History replay restores without ordering checks
+   and re-anchors resumed runs, so reopen never manufactures conflicts.
 
 Explicit path/shortest-path queries and changed-symbol convenience methods can
 remain later follow-ups; Marang can compose current traversals in the interim.
@@ -144,7 +157,7 @@ than adding workflow IDs to the Hetu graph model.
 ### Security and resource notes
 
 Hetu bounds source enumeration/materialization, ingestion batches, and each
-query, but there is no global retained-graph or Ladybug replay cap. Marang must
+query, but there is no global retained-graph or LatticeDb replay cap. Marang must
 apply a total context budget and treat large or highly connected results as
 truncated. Query envelopes may expose repository-relative paths, symbol names,
 properties, and documentation summaries; adapter output must apply its own
@@ -175,7 +188,7 @@ MCP exposure, parser evaluation, or delegated-work synchronization through
 Hetu:
 
 - [ ] Prove an isolated Hongxian consumer has no transitive Hetu, Roslyn, ANTLR,
-  or LadybugDB dependencies.
+  or LatticeDB dependencies.
 - [ ] Decide the optional integration package's repository ownership without
   changing dependency direction. `Penghou.Hongxian.Hetu` may depend on both
   sides; Hongxian core/storage and Hetu core must not depend on it.
@@ -329,7 +342,7 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 - **Package-reference nodes (M)** — `PackageReference` items become bounded
   syntax-evidence external dependency nodes with version and unexpanded
   condition metadata; do not claim evaluated MSBuild semantics.
-- **Solution-file scoping (M)** — parse `.sln` for canonical project sets,
+- **Solution-file scoping (M)** — parse `.sln` and `.slnx` for canonical project sets,
   configurations, and explicit solution dependencies instead of directory-walk
   inference. Project-reference edges remain the primary build-order evidence.
 
@@ -340,10 +353,13 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier C — strategic
 
-- **Publication snapshot export/import (M)** — store-agnostic, bounded,
+- **Publication snapshot export/import (M, landed on
+  `feature/latticedb-provider`)** — store-agnostic, bounded,
   schema-versioned serialized publications with integrity hashes and explicit
   compatibility rules; enables index-in-CI, query-locally workflows and makes
-  Ladybug optional for read-only consumers.
+  LatticeDb optional for read-only consumers. `ToJson`/`FromJson` transport
+  re-verifies schema, consistency, bounds, and hash; corrupt payloads fail
+  explicitly.
 - **Test-to-production mapping (M)** — detect test projects and emit exercised
   -by relationships once semantic calls land, so impact sets include the tests
   to run.
@@ -382,7 +398,7 @@ During dogfooding, evaluate these usability additions from real workflows:
 - canonical symbol-key lookup and source-location-to-enclosing-symbol lookup;
 - declarations and symbols by file or project;
 - bounded, hash-validated source excerpts with snapshot mismatch detection;
-- a cohesive host facade for indexing and querying, with typed C# and Ladybug
+- a cohesive host facade for indexing and querying, with typed C# and LatticeDb
   registration helpers.
 
 ### Transactional workspace experiment
@@ -498,13 +514,9 @@ semantics mechanically.
 
 ## Engineering health
 
-Tracked separately in [docs/architecture-review.md](docs/architecture-review.md),
-which carries the live open-findings ledger (namespace/package alignment,
-composite key types, coverage gates, API-surface snapshots for every package,
-package validation, benchmark CI integration). Items there that gate the first
-release: package validation, per-package public-API snapshots, and coverage
-reporting with thresholds. Keep that ledger and this roadmap in sync — the
-roadmap owns features; the review owns engineering debt.
+Package validation and per-package public-API contract tests are part of the
+current build. Coverage reporting with enforced thresholds and benchmark CI
+integration remain engineering follow-ups before a stable first release.
 
 ## Explicit non-goals for the first release
 
@@ -518,20 +530,30 @@ roadmap owns features; the review owns engineering debt.
 
 ## First-release acceptance criteria
 
-1. Public abstractions contain no Roslyn, LadybugDB, parser, or AI dependency.
+1. Public abstractions contain no Roslyn, LatticeDB, parser, or AI dependency.
 2. Stable symbols and physical declarations remain separate.
 3. Every graph fact has extraction ownership and honest evidence.
 4. A successful index publication atomically updates graph facts, run status,
    source state, and query-visible provenance.
 5. Failed and cancelled runs cannot alter the last successful graph snapshot.
-6. Memory and Ladybug pass the same conformance suite.
+6. Memory and LatticeDb pass the same conformance suite.
 7. C# extraction provides useful semantic calls, references, inheritance, and
    implementation relationships without guessed targets.
 8. Queries are deterministic, bounded, attributable, and explicit about
    ambiguity, index coverage, and truncation.
 9. Repeat and incremental indexing do not create duplicate graph entities.
 10. Solo can assemble explainable, snapshot-validated code context without
-    depending on Roslyn or LadybugDB types.
+    depending on Roslyn or LatticeDB types.
 11. A future deterministic non-C# plugin can implement the public extraction
     contract without changing Hetu core.
 12. Documentation quick-start samples compile against the public packages.
+
+## Durable store schema evolution
+
+`LatticeCodeGraphStore.CurrentSchemaVersion` is validated on open and a
+mismatch is rejected rather than migrated. There are no in-place upgrades in
+preview: a schema change ships with a schema-versioned export/import path
+(store-agnostic, bounded, integrity-hashed, per Tier C publication snapshot
+export/import) so hosts re-index or import instead of running mixed-version
+binaries against one file. The health check reports the on-disk version to
+make the mismatch actionable before any write is attempted.

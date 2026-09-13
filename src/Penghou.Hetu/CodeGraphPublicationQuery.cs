@@ -24,7 +24,7 @@ public sealed class CodeGraphPublicationQuery
         FindSymbolAsync(
             string qualifiedName,
             CancellationToken cancellationToken = default) =>
-        Require(await _queries.FindSymbolWithProvenanceAsync(
+        Require(await _queries.FindSymbolsByQualifiedNameWithProvenanceAsync(
             Publication.RepositoryId,
             qualifiedName,
             cancellationToken).ConfigureAwait(false));
@@ -67,43 +67,48 @@ public sealed class CodeGraphPublicationQuery
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.References], options, cancellationToken);
+            CodeGraphTraversalPresets.References, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindCallersAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindCalleesAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.Calls], options, cancellationToken);
+            CodeGraphTraversalPresets.Calls, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindImplementationsAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.Implements, CodeEdgeKinds.Inherits], options, cancellationToken);
+            CodeGraphTraversalPresets.Implementations, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindDependenciesAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Outgoing,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> FindDependentsAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
         CancellationToken cancellationToken = default) =>
         TraverseAsync(nodeId, CodeGraphDirection.Incoming,
-            [CodeEdgeKinds.DependsOn], options, cancellationToken);
+            CodeGraphTraversalPresets.Dependencies, options, cancellationToken);
 
+    /// <summary>
+    /// Returns the incoming impact set: nodes that reference, call, implement,
+    /// inherit, or depend on <paramref name="nodeId"/>. Outgoing edges are
+    /// intentionally excluded; use neighborhood or dependency traversals for those.
+    /// </summary>
     public ValueTask<CodeGraphQueryEnvelope<CodeGraphTraversalResult>> GetImpactSetAsync(
         CodeNodeId nodeId,
         CodeGraphQueryOptions? options = null,
@@ -111,13 +116,7 @@ public sealed class CodeGraphPublicationQuery
         TraverseAsync(
             nodeId,
             CodeGraphDirection.Incoming,
-            [
-                CodeEdgeKinds.References,
-                CodeEdgeKinds.Calls,
-                CodeEdgeKinds.Implements,
-                CodeEdgeKinds.Inherits,
-                CodeEdgeKinds.DependsOn
-            ],
+            CodeGraphTraversalPresets.ImpactSet,
             options,
             cancellationToken);
 
@@ -127,6 +126,17 @@ public sealed class CodeGraphPublicationQuery
             CodeGraphQueryOptions? options = null,
             CancellationToken cancellationToken = default) =>
         Require(await _queries.GetImpactSetsWithProvenanceAsync(
+            Publication.RepositoryId,
+            seedNodeIds,
+            options,
+            cancellationToken).ConfigureAwait(false));
+
+    public async ValueTask<CodeGraphQueryEnvelope<CodeAffectedTestsResult>>
+        GetAffectedTestsAsync(
+            IReadOnlyCollection<CodeNodeId> seedNodeIds,
+            CodeGraphQueryOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+        Require(await _queries.GetAffectedTestsWithProvenanceAsync(
             Publication.RepositoryId,
             seedNodeIds,
             options,
@@ -147,10 +157,12 @@ public sealed class CodeGraphPublicationQuery
         IReadOnlyList<CodeGraphDeclaration>>>
         GetDeclarationsInFileAsync(
             string sourcePath,
+            CodeGraphQueryOptions? options = null,
             CancellationToken cancellationToken = default) =>
         Require(await _queries.GetDeclarationsInFileWithProvenanceAsync(
             Publication.RepositoryId,
             sourcePath,
+            options,
             cancellationToken).ConfigureAwait(false));
 
     private CodeGraphQueryEnvelope<TResult> Require<TResult>(

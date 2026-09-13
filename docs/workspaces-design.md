@@ -41,7 +41,7 @@ publication/revision identities and contributor provenance.
 ## Source persistence separation
 
 Workspace source persistence is a separate responsibility from graph
-persistence. Ladybug does not store source blobs and ICodeGraphStore gains no
+persistence. LatticeDB does not store source blobs and ICodeGraphStore gains no
 blob methods; introduce ICodeWorkspaceStore only after revision, retention,
 privacy, encryption, size-budget, and cleanup semantics are designed. A
 recovered workspace must validate its pinned base publication and source

@@ -12,6 +12,7 @@ public sealed class RuntimePublicApiContractTests
             .ToArray();
         var expected = new[]
         {
+            "Penghou.Hetu.CodeAffectedTestsResult",
             "Penghou.Hetu.CodeGraphBatchValidator",
             "Penghou.Hetu.CodeGraphDirection",
             "Penghou.Hetu.CodeGraphIngestionDiagnostics",
@@ -27,7 +28,10 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeGraphPublication",
             "Penghou.Hetu.CodeGraphPublicationChangedException",
             "Penghou.Hetu.CodeGraphPublicationQuery",
+            "Penghou.Hetu.CodeFreshnessResult",
+            "Penghou.Hetu.CodeFreshnessStatus",
             "Penghou.Hetu.CodeGraphMultiTraversalResult",
+            "Penghou.Hetu.CodeGraphStoreException",
             "Penghou.Hetu.CodeGraphStoreHealth",
             "Penghou.Hetu.CodeGraphStoreHealthStatus",
             "Penghou.Hetu.CodeGraphTraversalQuery",
@@ -47,7 +51,11 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeIndexIdentity",
             "Penghou.Hetu.CodePluginIndexingDiagnostics",
             "Penghou.Hetu.CodePluginIndexingStatus",
+            "Penghou.Hetu.CodePublicationSnapshot",
+            "Penghou.Hetu.CodePublicationSnapshotException",
+            "Penghou.Hetu.CodeQueryOperations",
             "Penghou.Hetu.CodeIndexUnitReplacement",
+            "Penghou.Hetu.CodeNamePatternResult",
             "Penghou.Hetu.CodeRepositoryManifest",
             "Penghou.Hetu.CodeRepositoryDescriptor",
             "Penghou.Hetu.CodeRepositoryDiscoveryEventKind",
@@ -58,6 +66,7 @@ public sealed class RuntimePublicApiContractTests
             "Penghou.Hetu.CodeRepositoryProviderRegistry",
             "Penghou.Hetu.CodeRepositoryProviderSelectionException",
             "Penghou.Hetu.CodeRepositoryIndexState",
+            "Penghou.Hetu.CodeSnapshotOptions",
             "Penghou.Hetu.CodeSourceManifest",
             "Penghou.Hetu.CodeSourceChangedDuringIndexingException",
             "Penghou.Hetu.CodeSourceSizeLimitException",

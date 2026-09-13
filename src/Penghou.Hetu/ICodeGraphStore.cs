@@ -60,6 +60,14 @@ public interface ICodeGraphReader
         CodeRepositoryId repositoryId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Gets every published index unit for the repository in deterministic
+    /// plugin and unit order. Backs integrity-checked publication snapshots.
+    /// </summary>
+    ValueTask<IReadOnlyList<CodeIndexUnitReplacement>> GetPublishedUnitsAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default);
+
     ValueTask<CodeGraphQueryEnvelope<IReadOnlyList<CodeGraphNode>>?>
         FindNodesByQualifiedNameWithProvenanceAsync(
             CodeRepositoryId repositoryId,
@@ -91,6 +99,17 @@ public interface ICodeGraphReader
     ValueTask<IReadOnlyList<CodeGraphNode>> FindNodesByQualifiedNameAsync(
         CodeRepositoryId repositoryId,
         string qualifiedName,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds up to <paramref name="maxResults"/> nodes whose qualified or display
+    /// name contains <paramref name="pattern"/> (ordinal, case-insensitive),
+    /// ordered by qualified name then node identity.
+    /// </summary>
+    ValueTask<CodeNamePatternResult> FindNodesByNamePatternAsync(
+        CodeRepositoryId repositoryId,
+        string pattern,
+        int maxResults = CodeNamePatternResult.DefaultMaxResults,
         CancellationToken cancellationToken = default);
 
     ValueTask<IReadOnlyList<CodeGraphDeclaration>> GetDeclarationsAsync(

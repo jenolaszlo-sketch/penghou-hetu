@@ -239,6 +239,49 @@ public sealed class CSharpCodeGraphPluginTests
     }
 
     [Fact]
+    public async Task IndexingLifecycle_RemovesProjectUnitWhenSolutionMembershipChanges()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-solution-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "A"));
+        Directory.CreateDirectory(Path.Combine(root, "B"));
+        var solutionPath = Path.Combine(root, "Example.sln");
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "A", "A.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await File.WriteAllTextAsync(Path.Combine(root, "A", "A.cs"), "namespace Example; public class A { }");
+            await File.WriteAllTextAsync(Path.Combine(root, "B", "B.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            await File.WriteAllTextAsync(Path.Combine(root, "B", "B.cs"), "namespace Example; public class B { }");
+            await File.WriteAllTextAsync(solutionPath, Solution("A/A.csproj", "B/B.csproj"));
+
+            var repositoryId = new CodeRepositoryId("repo:solution-membership");
+            var store = new InMemoryCodeGraphStore();
+            var indexing = new CodeIndexingService(
+                new CodeRepositoryProviderRegistry([new FileSystemCodeRepositoryProvider()]),
+                new CodeGraphPluginRegistry([new CSharpCodeGraphPlugin()]),
+                store);
+            var descriptor = new CodeRepositoryDescriptor(repositoryId, root);
+            await indexing.IndexAsync(descriptor, new("run:both"));
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.B"));
+
+            await File.WriteAllTextAsync(solutionPath, Solution("A/A.csproj"));
+            var result = await indexing.IndexAsync(descriptor, new("run:a-only"));
+
+            Assert.Single(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.A"));
+            Assert.Empty(await store.FindNodesByQualifiedNameAsync(repositoryId, "Example.B"));
+            Assert.Equal(1, result.Diagnostics.IndexUnitsDeleted);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+
+        static string Solution(params string[] projects) =>
+            "Microsoft Visual Studio Solution File, Format Version 12.00\n" +
+            string.Join('\n', projects.Select((project, index) =>
+                $"Project(\"{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}\") = \"P{index}\", \"{project}\", \"{{{index + 1:D8}-1111-1111-1111-111111111111}}\"\nEndProject"));
+    }
+
+    [Fact]
     public async Task IndexingLifecycle_ChangedProjectReferenceRemovesDependencyEdge()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hetu-csharp-reference-{Guid.NewGuid():N}");
@@ -472,14 +515,14 @@ public sealed class CSharpCodeGraphPluginTests
 
         // Tier-A ride-alongs: doc summary and attributes on the method that
         // carries them; constant literal on the field.
-        Assert.IsType<CodeTextProperty>(dispatch.Properties["doc-summary"]);
+        Assert.IsType<CodeTextProperty>(dispatch.Properties[CodePropertyKeys.DocSummary]);
         Assert.Contains(
             "Central dispatch",
-            ((CodeTextProperty)dispatch.Properties["doc-summary"]).Value);
+            ((CodeTextProperty)dispatch.Properties[CodePropertyKeys.DocSummary]).Value);
         Assert.True(
-            dispatch.Properties.ContainsKey("obsolete"),
+            dispatch.Properties.ContainsKey(CodePropertyKeys.Obsolete),
             $"obsolete not found; keys=[{string.Join(",", dispatch.Properties.Keys)}]");
-        Assert.True(limit.Properties.TryGetValue("constant-value", out var literal));
+        Assert.True(limit.Properties.TryGetValue(CodePropertyKeys.ConstantValue, out var literal));
         Assert.Equal(42, ((CodeIntegerProperty)literal).Value);
 
         // References: typeof + constant usage from the same callable.
@@ -498,7 +541,7 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.Contains(coverage, value =>
             value.RelationshipKind == CodeEdgeKinds.Imports.Value);
         Assert.All(coverage, value =>
-            Assert.True(CodeRelationshipCoverageState.IsDefined(value.State)));
+            Assert.True(Enum.IsDefined(value.State)));
     }
 
     [Fact]
@@ -578,6 +621,366 @@ public sealed class CSharpCodeGraphPluginTests
             edge.TargetId == add.Id);
     }
 
+    [Fact]
+    public async Task ExtractAsync_ResolvesGenericMethodCallsToTheirDefinition()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Store.cs", """
+                namespace Example;
+
+                public class Store<T>
+                {
+                    public T Get(T fallback) => fallback;
+                    public int Count<TItem>(TItem item) => 1;
+                }
+
+                public class Driver
+                {
+                    public string Run()
+                    {
+                        var store = new Store<string>();
+                        return store.Get("hi");
+                    }
+                }
+                """));
+
+        // Constructed generics resolve back to the generic definition node.
+        var get = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.QualifiedName!.Contains("Store<T>.Get(", StringComparison.Ordinal));
+        var count = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.QualifiedName!.Contains("Store<T>.Count<", StringComparison.Ordinal));
+        var run = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.Driver.Run()");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id &&
+            edge.TargetId == get.Id);
+        Assert.Equal(
+            CodeRelationshipCoverageState.Produced,
+            extracted.Result.RelationshipCoverage.Single(value =>
+                value.RelationshipKind == CodeEdgeKinds.Calls.Value).State);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ResolvesExtensionMethodCallsToTheirDefinition()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Extensions.cs", """
+                namespace Example;
+
+                public static class StringExtensions
+                {
+                    public static string Shout(this string value) => value.ToUpperInvariant();
+                }
+
+                public class Announcer
+                {
+                    public string Run(string input) => input.Shout();
+                }
+                """));
+
+        // Instance-syntax extension calls resolve to the static definition.
+        var shout = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.QualifiedName!.Contains("StringExtensions.Shout(", StringComparison.Ordinal));
+        var run = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.Announcer.Run(string)");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id &&
+            edge.TargetId == shout.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ResolvesInterfaceDispatchToTheInterfaceMember()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Dispatch.cs", """
+                namespace Example;
+
+                public interface IWorker { void Execute(); }
+
+                public class Worker : IWorker
+                {
+                    public void Execute() { }
+                }
+
+                public class Supervisor
+                {
+                    public void Run(IWorker worker) => worker.Execute();
+                }
+                """));
+
+        var worker = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.Worker");
+        var interfaceNode = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Interface && node.QualifiedName == "Example.IWorker");
+        var interfaceExecute = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.IWorker.Execute()");
+        var run = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.QualifiedName == "Example.Supervisor.Run(Example.IWorker)");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements &&
+            edge.SourceId == worker.Id &&
+            edge.TargetId == interfaceNode.Id);
+        // The receiver is interface-typed, so Roslyn binds to the interface
+        // member rather than guessing an implementation.
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id &&
+            edge.TargetId == interfaceExecute.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_EmitsPackageReferenceNodesWithSyntaxEvidence()
+    {
+        var extracted = await ExtractAsync(
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+                    <PackageReference Include="Serilog" Version="4.0.0" Condition="'$(TargetFramework)' == 'net10.0'" />
+                    <PackageReference Include="Local.Tool" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public void Run() { }
+                }
+                """));
+
+        var project = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Project);
+        var newtonsoft = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Package && node.Name == "Newtonsoft.Json");
+        Assert.Equal(
+            "13.0.1",
+            ((CodeTextProperty)newtonsoft.Properties[CodePropertyKeys.PackageVersion]).Value);
+        var serilog = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Package && node.Name == "Serilog");
+        // Conditions are preserved unexpanded: no MSBuild evaluation.
+        Assert.Equal(
+            "'$(TargetFramework)' == 'net10.0'",
+            ((CodeTextProperty)serilog.Properties[CodePropertyKeys.PackageCondition]).Value);
+        var unversioned = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Package && node.Name == "Local.Tool");
+        Assert.Equal(
+            string.Empty,
+            ((CodeTextProperty)unversioned.Properties[CodePropertyKeys.PackageVersion]).Value);
+
+        var packageEdges = extracted.Edges
+            .Where(edge =>
+                edge.Kind == CodeEdgeKinds.DependsOn &&
+                edge.SourceId == project.Id)
+            .ToArray();
+        Assert.Equal(3, packageEdges.Length);
+        Assert.All(packageEdges, edge =>
+            Assert.Equal(CodeEvidenceKind.Syntax, edge.Evidence.Kind));
+        Assert.Contains(packageEdges, edge => edge.TargetId == newtonsoft.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_CapsPackageReferencesDeterministically()
+    {
+        var references = string.Join(
+            "\n",
+            Enumerable.Range(0, 257).Select(index =>
+                $"""<PackageReference Include="Pkg{index:D3}" Version="1.0.0" />"""));
+        var extracted = await ExtractAsync(
+            ("src/App/App.csproj", $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                {references}
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public void Run() { }
+                }
+                """));
+
+        Assert.Equal(
+            256,
+            extracted.Nodes.Count(node => node.Kind == CodeNodeKinds.Package));
+        Assert.Contains("csharp.project.package-cap", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_SolutionDefinesTheCanonicalProjectSet()
+    {
+        var extracted = await ExtractAsync(
+            ("src/App.sln", """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ghost", "Ghost\\Ghost.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                EndGlobal
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public void Run() { }
+                }
+                """),
+            ("src/Orphan/Orphan.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Orphan/Orphan.cs", """
+                namespace Orphan;
+                public class Orphan
+                {
+                    public void Run() { }
+                }
+                """));
+
+        // Listed projects index; unlisted projects are skipped (never merged
+        // into loose sources); listed-but-absent projects warn.
+        var unitIds = extracted.UnitIds.Select(unit => unit.Value).ToArray();
+        Assert.Contains(CSharpProjectUnitId("src/App/App.csproj"), unitIds);
+        Assert.DoesNotContain(CSharpProjectUnitId("src/Orphan/Orphan.csproj"), unitIds);
+        Assert.Contains(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Type && node.QualifiedName == "App.Program");
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.QualifiedName == "Orphan.Orphan");
+        Assert.Contains("csharp.solution.unlisted-project", extracted.Result.WarningCodes);
+        Assert.Contains("csharp.solution.missing-project", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_SolutionXmlDefinesTheCanonicalProjectSet()
+    {
+        var plugin = new CSharpCodeGraphPlugin();
+        Assert.True(plugin.CanHandle("src/App.slnx"));
+        var extracted = await ExtractAsync(
+            ("src/App.slnx", """
+                <Solution>
+                  <Folder Name="/src/">
+                    <Project Path="App/App.csproj" />
+                  </Folder>
+                </Solution>
+                """),
+            ("src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/App/Program.cs", "namespace App; public class Program { }"),
+            ("src/Other/Other.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/Other/Other.cs", "namespace Other; public class OtherType { }"));
+
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "App.Program");
+        Assert.DoesNotContain(extracted.Nodes, node => node.QualifiedName == "Other.OtherType");
+        Assert.Contains("csharp.solution.unlisted-project", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PreservesCaseDistinctProjectPathsOnCaseSensitiveHosts()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var extracted = await ExtractAsync(
+            ("src/App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/App/Upper.cs", "namespace Upper; public class Value { }"),
+            ("src/app/app.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+            ("src/app/Lower.cs", "namespace Lower; public class Value { }"));
+
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "Upper.Value");
+        Assert.Contains(extracted.Nodes, node => node.QualifiedName == "Lower.Value");
+        Assert.Equal(2, extracted.UnitIds.Count);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_MarksExactAllowlistedTestMethods()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Tests.cs", """
+                namespace Xunit
+                {
+                    public class FactAttribute : System.Attribute { }
+                    public class CustomFactAttribute : System.Attribute { }
+                }
+
+                namespace Example;
+
+                public class Calculator
+                {
+                    public int Add(int a, int b) => a + b;
+                }
+
+                public class CalculatorTests
+                {
+                    [Xunit.Fact]
+                    public void AddWorks()
+                    {
+                        var calculator = new Calculator();
+                        calculator.Add(1, 2);
+                    }
+
+                    [Xunit.CustomFact]
+                    public void CustomLabeled() { }
+
+                    public void Helper() { }
+                }
+                """));
+
+        var test = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "AddWorks");
+        Assert.True(
+            test.Properties.TryGetValue(CodePropertyKeys.TestMethod, out var marker) &&
+            marker is CodeBooleanProperty { Value: true });
+        // Near-miss attribute names and plain methods are never tests.
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name is "CustomLabeled" or "Helper" &&
+                node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name == "Add" &&
+                node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {
@@ -641,3 +1044,4 @@ public sealed class CSharpCodeGraphPluginTests
         CodeGraphExtractionResult Result,
         IReadOnlyList<CodeIndexUnitId> UnitIds);
 }
+

@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+
 namespace Penghou.Hetu;
 
 /// <summary>Repository-wide inputs available while creating an extraction session.</summary>
@@ -9,7 +11,8 @@ public sealed record CodeGraphPluginContext
         CodeIndexRunId indexRunId,
         IReadOnlyList<CodeGraphSource> sources,
         IReadOnlyDictionary<string, string>? settings = null,
-        IReadOnlyList<CodeGraphSourceChange>? changes = null)
+        IReadOnlyList<CodeGraphSourceChange>? changes = null,
+        IReadOnlyCollection<CodeIndexUnitId>? previousIndexUnits = null)
     {
         RepositoryId = repositoryId ??
             throw new ArgumentNullException(nameof(repositoryId));
@@ -43,6 +46,13 @@ public sealed record CodeGraphPluginContext
             throw new ArgumentException("Plugin changes must have unique paths.", nameof(changes));
 
         Settings = CopySettings(settings);
+        PreviousIndexUnits = Array.AsReadOnly((previousIndexUnits ?? [])
+            .Select(unit => unit ?? throw new ArgumentException(
+                "Previous index units cannot contain null identities.",
+                nameof(previousIndexUnits)))
+            .Distinct()
+            .OrderBy(unit => unit.Value, StringComparer.Ordinal)
+            .ToArray());
     }
 
     public CodeRepositoryId RepositoryId { get; }
@@ -55,13 +65,15 @@ public sealed record CodeGraphPluginContext
     public IReadOnlyList<CodeGraphSource> Sources { get; }
     public IReadOnlyList<CodeGraphSourceChange> Changes { get; }
     public IReadOnlyDictionary<string, string> Settings { get; }
+    /// <summary>Gets the plugin-owned units in the previous successful publication.</summary>
+    public IReadOnlyCollection<CodeIndexUnitId> PreviousIndexUnits { get; }
 
     private static IReadOnlyDictionary<string, string> CopySettings(
         IReadOnlyDictionary<string, string>? settings)
     {
         var copy = new SortedDictionary<string, string>(StringComparer.Ordinal);
         if (settings is null)
-            return copy;
+            return new ReadOnlyDictionary<string, string>(copy);
 
         foreach (var (key, value) in settings)
         {
@@ -72,7 +84,7 @@ public sealed record CodeGraphPluginContext
                     nameof(settings)));
         }
 
-        return copy;
+        return new ReadOnlyDictionary<string, string>(copy);
     }
 }
 
@@ -118,14 +130,11 @@ public sealed record CodeGraphSourceChange
 }
 
 /// <summary>States allowed on <see cref="CodeRelationshipCoverage"/>.</summary>
-public static class CodeRelationshipCoverageState
+public enum CodeRelationshipCoverageState
 {
-    public const string Produced = "produced";
-    public const string Partial = "partial";
-    public const string NotProduced = "not-produced";
-
-    public static bool IsDefined(string state) =>
-        state is Produced or Partial or NotProduced;
+    Produced = 0,
+    Partial = 1,
+    NotProduced = 2
 }
 
 /// <summary>
@@ -145,15 +154,15 @@ public sealed record CodeRelationshipCoverage
 {
     public CodeRelationshipCoverage(
         string relationshipKind,
-        string state,
+        CodeRelationshipCoverageState state,
         int edgesEmitted,
         int unresolvedTargets)
     {
         RelationshipKind = ContractValue.Identifier(
             relationshipKind,
             nameof(relationshipKind));
-        if (!CodeRelationshipCoverageState.IsDefined(state))
-            throw new ArgumentException("Unknown relationship coverage state.", nameof(state));
+        if (!Enum.IsDefined(state))
+            throw new ArgumentOutOfRangeException(nameof(state));
         if (edgesEmitted < 0 || unresolvedTargets < 0)
             throw new ArgumentOutOfRangeException(nameof(edgesEmitted));
         if (state == CodeRelationshipCoverageState.NotProduced &&
@@ -170,7 +179,7 @@ public sealed record CodeRelationshipCoverage
     }
 
     public string RelationshipKind { get; }
-    public string State { get; }
+    public CodeRelationshipCoverageState State { get; }
     public int EdgesEmitted { get; }
     public int UnresolvedTargets { get; }
 }

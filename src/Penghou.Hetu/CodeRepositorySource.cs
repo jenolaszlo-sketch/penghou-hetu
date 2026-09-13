@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.ObjectModel;
 
 namespace Penghou.Hetu;
 
@@ -31,7 +32,7 @@ public sealed record CodeRepositoryDescriptor
             }
         }
 
-        Settings = settingsCopy;
+        Settings = new ReadOnlyDictionary<string, string>(settingsCopy);
     }
 
     public CodeRepositoryId Id { get; }
@@ -108,7 +109,7 @@ public sealed record CodeRepositoryEnumerationOptions
         if (maxEntries < 1)
             throw new ArgumentOutOfRangeException(nameof(maxEntries));
 
-        ExcludedDirectoryNames = (excludedDirectoryNames ?? DefaultExclusions)
+        ExcludedDirectoryNames = Array.AsReadOnly((excludedDirectoryNames ?? DefaultExclusions)
             .Select(name =>
             {
                 ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -123,7 +124,7 @@ public sealed record CodeRepositoryEnumerationOptions
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+            .ToArray());
         MaxDepth = maxDepth;
         MaxEntries = maxEntries;
         Observer = observer;
@@ -270,13 +271,17 @@ internal sealed class FileSystemCodeRepositorySource(
             cancellationToken.ThrowIfCancellationRequested();
             var (directory, depth) = pending.Pop();
             var entries = Directory.EnumerateFileSystemEntries(directory)
+                .Take(options.MaxEntries - count + 1)
                 .Order(StringComparer.Ordinal)
                 .ToArray();
+            if (entries.Length > options.MaxEntries - count)
+                throw new CodeRepositoryEnumerationLimitException(options.MaxEntries);
             var childDirectories = new List<string>();
 
             foreach (var path in entries)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                count++;
                 var attributes = File.GetAttributes(path);
                 var isDirectory = attributes.HasFlag(FileAttributes.Directory);
                 var isReparsePoint = attributes.HasFlag(FileAttributes.ReparsePoint);
@@ -307,13 +312,6 @@ internal sealed class FileSystemCodeRepositorySource(
                     options.Report(CodeRepositoryDiscoveryEventKind.ReparsePointSkipped);
                     continue;
                 }
-                count++;
-                if (count > options.MaxEntries)
-                {
-                    throw new CodeRepositoryEnumerationLimitException(
-                        options.MaxEntries);
-                }
-
                 var info = new FileInfo(path);
                 yield return new CodeRepositoryEntry(
                     Path.GetRelativePath(_root, path).Replace('\\', '/'),

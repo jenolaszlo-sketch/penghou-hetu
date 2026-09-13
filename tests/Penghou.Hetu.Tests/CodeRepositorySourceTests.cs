@@ -6,6 +6,33 @@ namespace Penghou.Hetu.Tests;
 public sealed class CodeRepositorySourceTests
 {
     [Fact]
+    public void RepositoryDescriptor_SettingsAreAnImmutableSnapshot()
+    {
+        var input = new Dictionary<string, string> { ["branch"] = "main" };
+        var descriptor = new CodeRepositoryDescriptor(
+            new CodeRepositoryId("repo:settings"),
+            "memory://settings",
+            input);
+
+        input["branch"] = "changed";
+        Assert.Equal("main", descriptor.Settings["branch"]);
+        Assert.Throws<NotSupportedException>(() =>
+            ((IDictionary<string, string>)descriptor.Settings).Add("extra", "value"));
+    }
+
+    [Fact]
+    public void EnumerationOptions_ExclusionsAreAnImmutableSnapshot()
+    {
+        var input = new List<string> { "generated" };
+        var options = new CodeRepositoryEnumerationOptions(input);
+
+        input.Add("later");
+        Assert.Equal(["generated"], options.ExcludedDirectoryNames);
+        Assert.Throws<NotSupportedException>(() =>
+            ((IList<string>)options.ExcludedDirectoryNames).Add("extra"));
+    }
+
+    [Fact]
     public async Task FileSystemSource_EnumeratesLazilyWithDefaultExclusions()
     {
         var root = CreateRepository();

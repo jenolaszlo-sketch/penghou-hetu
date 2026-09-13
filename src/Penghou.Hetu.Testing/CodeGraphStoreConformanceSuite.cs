@@ -118,7 +118,7 @@ public static class CodeGraphStoreConformanceSuite
         Require(
             sharedEnvelope is not null &&
             sharedEnvelope.Publication.IndexRunId == runId &&
-            sharedEnvelope.Query.Operation == "qualified-name" &&
+            sharedEnvelope.Query.Operation == CodeQueryOperations.QualifiedName &&
             sharedEnvelope.Result.Count == 1,
             "qualified-name provenance must identify its publication and applied query");
         var sharedProvenance = sharedEnvelope!.Provenance.Single(value =>
@@ -143,6 +143,49 @@ public static class CodeGraphStoreConformanceSuite
                 value.Contributors.Count == 1),
             "declaration queries must trace every returned declaration");
         checks.Add("declaration-provenance");
+
+        var patternResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "shared",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            patternResult.TotalMatches == 1 &&
+            !patternResult.Truncated &&
+            patternResult.Candidates.Count == 1 &&
+            patternResult.Candidates[0].Id == shared.Id,
+            "name-pattern search must find the shared node by substring");
+        checks.Add("name-pattern-substring-search");
+        var caseResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "EXAMPLE.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            caseResult.TotalMatches == 3 && !caseResult.Truncated,
+            "name-pattern search must match case-insensitively");
+        checks.Add("name-pattern-case-insensitive");
+        var boundedResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "example.",
+            2,
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            boundedResult.TotalMatches == 3 &&
+            boundedResult.Truncated &&
+            boundedResult.Candidates.Count == 2 &&
+            boundedResult.Candidates[0].QualifiedName == "Example.First" &&
+            boundedResult.Candidates[1].QualifiedName == "Example.Second",
+            "name-pattern search must be bounded and deterministically ordered");
+        checks.Add("name-pattern-bounded-deterministic");
+        var emptyResult = await store.FindNodesByNamePatternAsync(
+            repositoryId,
+            "zzz-no-such-name",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        Require(
+            emptyResult.TotalMatches == 0 &&
+            !emptyResult.Truncated &&
+            emptyResult.Candidates.Count == 0,
+            "name-pattern search must report empty results explicitly");
+        checks.Add("name-pattern-empty-result");
 
         var updateRunId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
         var updateStartedAt = startedAt.AddSeconds(2);
@@ -230,10 +273,10 @@ public static class CodeGraphStoreConformanceSuite
                 traversalNodes,
                 edges:
                 [
-                    Edge("ab", traversalNodes[0].Id, traversalNodes[1].Id),
-                    Edge("ac", traversalNodes[0].Id, traversalNodes[2].Id),
-                    Edge("bd", traversalNodes[1].Id, traversalNodes[3].Id),
-                    Edge("ca", traversalNodes[2].Id, traversalNodes[0].Id)
+                    Edge("ab", traversalNodes[0].Id, traversalNodes[1].Id, CodeEdgeKinds.Calls),
+                    Edge("ac", traversalNodes[0].Id, traversalNodes[2].Id, CodeEdgeKinds.References),
+                    Edge("bd", traversalNodes[1].Id, traversalNodes[3].Id, CodeEdgeKinds.Implements),
+                    Edge("ca", traversalNodes[2].Id, traversalNodes[0].Id, CodeEdgeKinds.DependsOn)
                 ]),
             cancellationToken).ConfigureAwait(false);
         var completed = new CodeIndexRunManifest(
@@ -307,6 +350,79 @@ public static class CodeGraphStoreConformanceSuite
             traversalEnvelope.Provenance.All(value => value.Contributors.Count > 0),
             "traversal provenance must cover every returned node and edge");
         checks.Add("bounded-traversal-provenance");
+        var callsOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.Calls],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            callsOnly.Edges.Count == 1 &&
+            callsOnly.Edges[0].Id.Value == "edge:ab" &&
+            callsOnly.Edges[0].Kind == CodeEdgeKinds.Calls,
+            "kind-filtered traversal must return only calls edges");
+        var referencesOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.References],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            referencesOnly.Edges.Count == 1 &&
+            referencesOnly.Edges[0].Id.Value == "edge:ac",
+            "kind-filtered traversal must return only references edges");
+        var implementsOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[1].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.Implements],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            implementsOnly.Edges.Count == 1 &&
+            implementsOnly.Edges[0].Id.Value == "edge:bd",
+            "kind-filtered traversal must return only implements edges");
+        var dependentsOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                CodeGraphDirection.Incoming,
+                [CodeEdgeKinds.DependsOn],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            dependentsOnly.Edges.Count == 1 &&
+            dependentsOnly.Edges[0].Id.Value == "edge:ca",
+            "incoming kind-filtered traversal must return only depends-on edges");
+        var multiKind = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.Calls, CodeEdgeKinds.References],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            multiKind.Edges.Count == 2 &&
+            multiKind.Edges.All(edge =>
+                edge.Kind == CodeEdgeKinds.Calls || edge.Kind == CodeEdgeKinds.References),
+            "multi-kind traversal must return exactly the requested kinds");
+        checks.Add("traversal-relationship-kind-filter");
 
         Require(
             await store.GetNodeAsync(repositoryId, firstOnly.Id, cancellationToken)
@@ -455,6 +571,83 @@ public static class CodeGraphStoreConformanceSuite
             "terminal index runs must reject late facts");
         checks.Add("terminal-run-rejects-late-facts");
 
+        var firstCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        var secondCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                firstCompetingId,
+                startedAt.AddSeconds(5),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                secondCompetingId,
+                startedAt.AddSeconds(6),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.CompleteIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                firstCompetingId,
+                startedAt.AddSeconds(5),
+                CodeIndexRunStatus.Completed,
+                startedAt.AddSeconds(7),
+                [pluginId]),
+            new CodeRepositoryIndexState(
+                repositoryId,
+                firstCompetingId,
+                [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+                "snapshot:ordering",
+                true),
+            cancellationToken).ConfigureAwait(false);
+        await RequireThrowsAsync<InvalidOperationException>(async () =>
+            await store.CompleteIndexRunAsync(
+                new CodeIndexRunManifest(
+                    repositoryId,
+                    secondCompetingId,
+                    startedAt.AddSeconds(6),
+                    CodeIndexRunStatus.Completed,
+                    startedAt.AddSeconds(8),
+                    [pluginId]),
+                new CodeRepositoryIndexState(
+                    repositoryId,
+                    secondCompetingId,
+                    [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:changed")],
+                    "snapshot:ordering-stale",
+                    true),
+                cancellationToken).ConfigureAwait(false));
+        checks.Add("superseded-run-completion-conflicts");
+        var thirdCompetingId = new CodeIndexRunId($"run:{Guid.NewGuid():N}");
+        await store.StoreIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                thirdCompetingId,
+                startedAt.AddSeconds(9),
+                plugins: [pluginId]),
+            cancellationToken).ConfigureAwait(false);
+        await store.CompleteIndexRunAsync(
+            new CodeIndexRunManifest(
+                repositoryId,
+                thirdCompetingId,
+                startedAt.AddSeconds(9),
+                CodeIndexRunStatus.Completed,
+                startedAt.AddSeconds(10),
+                [pluginId]),
+            new CodeRepositoryIndexState(
+                repositoryId,
+                thirdCompetingId,
+                [new CodeSourceManifest(pluginId, "1.0.0", "src/Current.cs", "sha256:current")],
+                "snapshot:ordering",
+                true),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            (await store.GetLatestPublicationAsync(repositoryId, cancellationToken)
+                .ConfigureAwait(false))?.IndexRunId == thirdCompetingId,
+            "a fresh run observes the latest publication and completes");
+        checks.Add("fresh-run-completes-after-conflict");
+
         return new CodeGraphStoreConformanceReport(checks);
     }
 
@@ -479,12 +672,13 @@ public static class CodeGraphStoreConformanceSuite
     private static CodeGraphEdge Edge(
         string id,
         CodeNodeId source,
-        CodeNodeId target) =>
+        CodeNodeId target,
+        CodeEdgeKind? kind = null) =>
         new(
             new CodeEdgeId($"edge:{id}"),
             source,
             target,
-            CodeEdgeKinds.Calls,
+            kind ?? CodeEdgeKinds.Calls,
             new CodeEvidence(CodeEvidenceKind.Semantic, "conformance"));
 
     private static CodeIndexUnitReplacement Replacement(

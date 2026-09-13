@@ -8,10 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
-    <PackageReference Include="LadybugDB" Version="0.19.1" />
-    <PackageReference Include="LadybugDB.Native" Version="0.19.1" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Penghou.Hetu.Ladybug\Penghou.Hetu.Ladybug.csproj" />
+    <ProjectReference Include="..\..\src\Penghou.Hetu.LatticeDb\Penghou.Hetu.LatticeDb.csproj" />
   </ItemGroup>
 </Project>

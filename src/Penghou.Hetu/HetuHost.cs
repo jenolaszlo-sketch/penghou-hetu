@@ -2,8 +2,9 @@ namespace Penghou.Hetu;
 
 /// <summary>
 /// Fluent builder for a complete Hetu host: repository providers, plugins,
-/// store selection, indexing, and queries behind one entry point. Hosts and
-/// Solo use this instead of manually assembling individual services.
+/// store selection, indexing, and queries behind one entry point. This is the
+/// canonical entry point; hosts and Solo use this instead of manually
+/// assembling individual services.
 /// </summary>
 public sealed class HetuHostBuilder
 {
@@ -14,6 +15,7 @@ public sealed class HetuHostBuilder
     ];
     private Func<ICodeGraphStore>? _storeFactory;
     private CodeIndexingOptions? _indexingOptions;
+    private bool _built;
 
     /// <summary>Sets the graph store. Call once before Build.</summary>
     public HetuHostBuilder UseStore(Func<ICodeGraphStore> storeFactory)
@@ -63,11 +65,31 @@ public sealed class HetuHostBuilder
     /// <summary>Builds the host.</summary>
     public HetuHost Build()
     {
-        var store = _storeFactory?.Invoke() ?? new InMemoryCodeGraphStore();
+        if (_built)
+            throw new InvalidOperationException("A HetuHostBuilder can build only one host.");
+
+        // Validate registration sets before acquiring an owned store resource.
         var pluginRegistry = new CodeGraphPluginRegistry(_plugins);
         var repositoryRegistry = new CodeRepositoryProviderRegistry(_repositoryProviders);
-
-        return new HetuHost(repositoryRegistry, pluginRegistry, store, _indexingOptions);
+        _built = true;
+        var store = _storeFactory?.Invoke() ?? new InMemoryCodeGraphStore();
+        try
+        {
+            return new HetuHost(repositoryRegistry, pluginRegistry, store, _indexingOptions);
+        }
+        catch
+        {
+            switch (store)
+            {
+                case IAsyncDisposable asyncDisposable:
+                    asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    break;
+                case IDisposable disposable:
+                    disposable.Dispose();
+                    break;
+            }
+            throw;
+        }
     }
 }
 
@@ -125,6 +147,22 @@ public sealed class HetuHost : IAsyncDisposable
             options ?? _indexingOptions,
             diagnostics,
             cancellationToken);
+
+    /// <summary>Compares live repository sources with the published state without indexing.</summary>
+    public ValueTask<CodeFreshnessResult> CheckFreshnessAsync(
+        CodeRepositoryDescriptor descriptor,
+        CodeIndexingOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        Indexing.CheckFreshnessAsync(
+            descriptor,
+            options ?? _indexingOptions,
+            cancellationToken);
+
+    /// <summary>Opens the latest publication for multi-call context assembly.</summary>
+    public ValueTask<CodeGraphPublicationQuery?> OpenLatestPublicationAsync(
+        CodeRepositoryId repositoryId,
+        CancellationToken cancellationToken = default) =>
+        Queries.OpenLatestPublicationAsync(repositoryId, cancellationToken);
 
     /// <summary>Checks provider-neutral readiness without reading source content.</summary>
     public async ValueTask<HetuHostHealth> CheckHealthAsync(

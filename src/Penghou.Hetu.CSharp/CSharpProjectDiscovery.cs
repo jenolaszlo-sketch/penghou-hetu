@@ -3,12 +3,18 @@ using System.Xml.Linq;
 
 namespace Penghou.Hetu;
 
+internal sealed record CSharpPackageReference(
+    string Name,
+    string? Version,
+    string? Condition);
+
 internal sealed record CSharpProjectModel(
     string Path,
     string Name,
     string AssemblyName,
     IReadOnlyList<string> SourcePaths,
     IReadOnlyList<string> ProjectReferences,
+    IReadOnlyList<CSharpPackageReference> PackageReferences,
     string? TargetFramework,
     string? LanguageVersion,
     string? Nullable,
@@ -21,11 +27,25 @@ internal sealed record CSharpProjectModel(
         : string.Empty;
 }
 
+internal sealed record CSharpDiscoveryResult(
+    IReadOnlyList<CSharpProjectModel> Projects,
+    IReadOnlyList<string> Warnings);
+
 internal static partial class CSharpProjectDiscovery
 {
     private const string LooseProjectPath = "@loose/csharp";
+    private const int MaxPackagesPerProject = 256;
+    internal static StringComparer PathComparer { get; } = OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
+    private static StringComparison PathComparison { get; } = OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
 
-    public static IReadOnlyList<CSharpProjectModel> Discover(
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public static CSharpDiscoveryResult Discover(
         IReadOnlyDictionary<string, string> content)
     {
         var sourcePaths = content.Keys
@@ -37,20 +57,137 @@ internal static partial class CSharpProjectDiscovery
             .Order(StringComparer.Ordinal)
             .ToArray();
         if (projectPaths.Length == 0)
-            return [Loose(sourcePaths)];
+            return new([Loose(sourcePaths)], []);
 
-        var projects = projectPaths
+        var discovered = projectPaths
             .Select(path => Parse(path, content[path], sourcePaths))
             .ToList();
-        var assigned = projects
-            .SelectMany(project => project.SourcePaths)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var loose = sourcePaths.Where(path =>
-            !assigned.Contains(path) &&
-            !projects.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
+        var solutionPaths = content.Keys
+            .Where(path => path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        if (solutionPaths.Length == 0)
+            return new(WithLoose(discovered, sourcePaths), []);
+
+        // Solutions define the canonical project set: the union of listed
+        // projects across every solution. Unlisted projects are skipped
+        // (warned), never silently merged; listed-but-absent projects warn.
+        var listed = solutionPaths
+            .SelectMany(solution => solution.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                ? ParseSolutionXmlProjects(content[solution], Directory(solution))
+                : ParseSolutionProjects(content[solution], Directory(solution)))
+            .Distinct(PathComparer)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var discoveredPaths = discovered
+            .Select(project => project.Path)
+            .ToHashSet(PathComparer);
+        var warnings = listed
+            .Where(path => !discoveredPaths.Contains(path))
+            .Select(_ => "csharp.solution.missing-project")
+            .Distinct()
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        var included = discovered
+            .Where(project => listed.Contains(project.Path, PathComparer))
+            .ToList();
+        warnings.AddRange(discovered
+            .Where(project => !listed.Contains(project.Path, PathComparer))
+            .Select(_ => "csharp.solution.unlisted-project")
+            .Distinct());
+        var loose = ComputeLoose(included, discovered, sourcePaths);
+        if (loose.Length > 0)
+            included.Add(Loose(loose));
+        return new(
+            included.OrderBy(project => project.Path, StringComparer.Ordinal).ToArray(),
+            warnings.Order(StringComparer.Ordinal).ToArray());
+    }
+
+    private static IReadOnlyList<CSharpProjectModel> WithLoose(
+        List<CSharpProjectModel> projects,
+        IReadOnlyList<string> sourcePaths)
+    {
+        var loose = ComputeLoose(projects, projects, sourcePaths);
         if (loose.Length > 0)
             projects.Add(Loose(loose));
         return projects.OrderBy(project => project.Path, StringComparer.Ordinal).ToArray();
+    }
+
+    private static string[] ComputeLoose(
+        IEnumerable<CSharpProjectModel> assignedProjects,
+        IEnumerable<CSharpProjectModel> directoryProjects,
+        IReadOnlyList<string> sourcePaths)
+    {
+        var assigned = assignedProjects
+            .SelectMany(project => project.SourcePaths)
+            .ToHashSet(PathComparer);
+        return sourcePaths.Where(path =>
+            !assigned.Contains(path) &&
+            !directoryProjects.Any(project => IsUnderDirectory(path, project.Directory))).ToArray();
+    }
+
+    /// <summary>
+    /// Reads solution <c>Project(...) = "name", "path", ...</c> entries.
+    /// Only project-file paths are kept; configurations, solution folders,
+    /// and nested-project sections are out of scope for the canonical set.
+    /// </summary>
+    private static IEnumerable<string> ParseSolutionProjects(string text, string directory)
+    {
+        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("Project(", StringComparison.Ordinal))
+                continue;
+            var equals = trimmed.IndexOf('=');
+            if (equals < 0)
+                continue;
+            var quotes = new List<string>();
+            var rest = trimmed[(equals + 1)..];
+            var span = rest.AsSpan();
+            while (true)
+            {
+                var open = span.IndexOf('"');
+                if (open < 0)
+                    break;
+                span = span[(open + 1)..];
+                var close = span.IndexOf('"');
+                if (close < 0)
+                    break;
+                quotes.Add(span[..close].ToString());
+                span = span[(close + 1)..];
+            }
+            if (quotes.Count >= 2)
+            {
+                var combined = Combine(directory, quotes[1].Replace('\\', '/'));
+                if (combined.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                    yield return combined;
+            }
+        }
+    }
+
+    /// <summary>Reads project membership from the XML-based solution format.</summary>
+    private static IEnumerable<string> ParseSolutionXmlProjects(string text, string directory)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(text, LoadOptions.None);
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var path in document.Descendants()
+                     .Where(element => element.Name.LocalName == "Project")
+                     .Select(element => element.Attribute("Path")?.Value)
+                     .Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            var combined = Combine(directory, path!.Replace('\\', '/'));
+            if (combined.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                yield return combined;
+        }
     }
 
     public static string IndexUnitId(string projectPath) =>
@@ -92,9 +229,32 @@ internal static partial class CSharpProjectDiscovery
         var references = Attributes(document, "ProjectReference", "Include")
             .Select(reference => Combine(directory, reference))
             .Where(reference => reference.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(PathComparer)
             .Order(StringComparer.Ordinal)
             .ToArray();
+        // Package references are recorded verbatim: no MSBuild evaluation,
+        // so Condition text is preserved unexpanded and a missing version
+        // stays unknown rather than guessed.
+        var packages = document.Descendants()
+            .Where(element => element.Name.LocalName == "PackageReference")
+            .Select(element => new CSharpPackageReference(
+                (element.Attribute("Include")?.Value ?? string.Empty).Trim(),
+                NormalizeOptional(
+                    element.Attribute("Version")?.Value ??
+                    element.Elements()
+                        .FirstOrDefault(child => child.Name.LocalName == "Version")?.Value),
+                NormalizeOptional(element.Attribute("Condition")?.Value)))
+            .Where(package => package.Name.Length > 0)
+            .Distinct()
+            .OrderBy(package => package.Name, StringComparer.Ordinal)
+            .ThenBy(package => package.Version, StringComparer.Ordinal)
+            .ThenBy(package => package.Condition, StringComparer.Ordinal)
+            .ToArray();
+        if (packages.Length > MaxPackagesPerProject)
+        {
+            warnings.Add("csharp.project.package-cap");
+            packages = packages[..MaxPackagesPerProject];
+        }
         var constants = (Property("DefineConstants") ?? string.Empty)
             .Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Distinct(StringComparer.Ordinal)
@@ -105,8 +265,9 @@ internal static partial class CSharpProjectDiscovery
             path,
             name,
             Property("AssemblyName") ?? name,
-            selected.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray(),
+            selected.Distinct(PathComparer).Order(StringComparer.Ordinal).ToArray(),
             references,
+            packages,
             Property("TargetFramework") ?? Property("TargetFrameworks")?.Split(';')[0],
             Property("LangVersion"),
             Property("Nullable"),
@@ -121,6 +282,7 @@ internal static partial class CSharpProjectDiscovery
             "Loose C# Sources",
             "Hetu.Loose.CSharp",
             sources,
+            [],
             [],
             null,
             null,
@@ -146,12 +308,15 @@ internal static partial class CSharpProjectDiscovery
             .Replace(@"\*\*", ".*", StringComparison.Ordinal)
             .Replace(@"\*", "[^/]*", StringComparison.Ordinal)
             .Replace(@"\?", "[^/]", StringComparison.Ordinal) + "$";
-        return Regex.IsMatch(source, regex, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var options = RegexOptions.CultureInvariant;
+        if (OperatingSystem.IsWindows())
+            options |= RegexOptions.IgnoreCase;
+        return Regex.IsMatch(source, regex, options);
     }
 
     private static bool IsUnderDirectory(string path, string directory) =>
         directory.Length == 0 ||
-        path.StartsWith($"{directory}/", StringComparison.OrdinalIgnoreCase);
+        path.StartsWith($"{directory}/", PathComparison);
 
     private static string Directory(string path) => path.Contains('/')
         ? path[..path.LastIndexOf('/')]

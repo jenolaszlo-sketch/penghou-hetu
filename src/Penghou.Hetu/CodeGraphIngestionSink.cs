@@ -227,18 +227,6 @@ public sealed class CodeGraphIngestionSink : ICodeGraphSink, IAsyncDisposable
         string? factId = null) =>
         new(kind, code, message, factId);
 
-    private readonly record struct OwnerKey(
-        string RepositoryId,
-        string PluginId,
-        string IndexUnitId)
-    {
-        public static OwnerKey From(CodeFactOrigin origin) =>
-            new(
-                origin.RepositoryId.Value,
-                origin.PluginId.Value,
-                origin.IndexUnitId.Value);
-    }
-
     private sealed class Accumulator(CodeFactOrigin origin)
     {
         private readonly List<CodeGraphNode> _nodes = [];

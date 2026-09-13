@@ -1,3 +1,3 @@
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("Penghou.Hetu.Ladybug")]
+[assembly: InternalsVisibleTo("Penghou.Hetu.LatticeDb")]
