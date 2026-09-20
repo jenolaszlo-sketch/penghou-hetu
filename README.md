@@ -1,5 +1,8 @@
 # Penghou.Hetu
 
+[![CI](https://github.com/jenolaszlo-sketch/penghou-hetu/actions/workflows/ci.yml/badge.svg)](https://github.com/jenolaszlo-sketch/penghou-hetu/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/jenolaszlo-sketch/penghou-hetu)](LICENSE)
+
 Penghou.Hetu is an embedded, language-neutral code knowledge graph for .NET.
 It turns source repositories into a normalized, queryable graph for repository
 understanding, dependency discovery, impact analysis, and context selection.
@@ -37,7 +40,7 @@ LatticeDb provider, and shared provider conformance suite. The API remains
 preview-quality and is built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
 semantic milestones and first-release invariants.
 
-## Planned packages
+## Packages
 
 | Package | Purpose |
 | --- | --- |
@@ -232,6 +235,14 @@ semantics should treat this as a known preview limitation; a future opt-in
 reference resolver can supply targeting-pack metadata without changing Hetu's
 graph contracts.
 
+The current extractor also models semantic reference edges from the smallest
+indexed owner, including local functions, attributes, explicit base types,
+interface implementation, ordinary symbol uses, implicit object creation, and
+constructor initializers. Import edges preserve alias, `static`, `global`, and
+scope metadata. Repeated references retain deterministic first evidence, and
+the extractor avoids inventing transitive inheritance or unresolved `var`
+references.
+
 ## Provider-neutral queries
 
 `CodeGraphQueryService` provides exact symbol and declaration lookup plus
@@ -395,6 +406,24 @@ become a general memory store or workflow engine.
 - AI-generated architectural labels or component clustering;
 - generated non-C# language packages.
 
-The first useful release will index real C# repositories, persist a stable
-graph, survive repeat and incremental indexing, and answer bounded structural
-and dependency queries.
+The current preview indexes real C# repositories, persists a stable graph,
+survives repeat and incremental indexing, and answers bounded structural and
+dependency queries. The remaining work is semantic expansion, operational
+hardening, and integration evidence rather than proving the basic architecture.
+
+## Development
+
+```powershell
+dotnet build Penghou.Hetu.slnx --configuration Release
+dotnet test Penghou.Hetu.slnx --configuration Release --no-build
+```
+
+See the [roadmap](ROADMAP.md), [benchmark notes](BENCHMARKS.md), and
+[milestone execution plan](docs/milestone-7.5-execution-plan.md) for current
+semantic and integration work.
+
+## License
+
+Apache-2.0
+
+Copyright (c) 2026 Jenő Konrád László
