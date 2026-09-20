@@ -284,6 +284,9 @@ version must not silently resolve to an unrelated working-tree checkout.
 
 ## Milestone 7.5 — useful semantic relationships
 
+Implementation is tracked in
+[docs/milestone-7.5-execution-plan.md](docs/milestone-7.5-execution-plan.md).
+
 The query surface exists, but the C# plugin must emit the relationships that
 make comprehension and impact analysis useful.
 
@@ -390,6 +393,19 @@ comprehension into Solo for:
 - estimating an impact neighborhood before editing;
 - recording the exact graph publication and query used for context selection;
 - optionally persisting selected graph observations or references in Cangjie.
+
+Memory/experience boundary:
+
+- Hetu remains authoritative only for code facts at an exact publication and
+  declared extraction-evidence level. It does not store participant beliefs,
+  workflow experience, model reputation, or procedural knowledge.
+- Cangjie may relate attributed diary entries to stable Hetu publication/node
+  references; Hongxian may record which publication/query influenced an
+  execution. Neither copies or silently upgrades a code observation into a
+  stronger fact.
+- Marang/Guyabano compose bounded code context with working memory and prior
+  experience. Hetu supplies query results, evidence, bounds, and freshness, not
+  planning or checkpoint decisions.
 
 During dogfooding, evaluate these usability additions from real workflows:
 
