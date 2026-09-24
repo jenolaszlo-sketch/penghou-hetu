@@ -22,13 +22,46 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore Penghou.Hetu.slnx
       - run: dotnet format Penghou.Hetu.slnx --verify-no-changes --no-restore
-      - run: dotnet test Penghou.Hetu.slnx -c Release --no-restore --collect:"XPlat Code Coverage"
+      - name: Test and coverage (core)
+        run: >
+          dotnet test tests/Penghou.Hetu.Tests/Penghou.Hetu.Tests.csproj
+          -c Release --no-restore
+          /p:CollectCoverage=true
+          /p:CoverletOutput=${{ github.workspace }}/coverage/
+          /p:CoverletOutputFormat=cobertura
+          '/p:Include=[Penghou.Hetu]*%2c[Penghou.Hetu.Abstractions]*'
+          /p:Threshold=55
+          /p:ThresholdType=line%2cbranch
+      - name: Test and coverage (CSharp)
+        run: >
+          dotnet test tests/Penghou.Hetu.CSharp.Tests/Penghou.Hetu.CSharp.Tests.csproj
+          -c Release --no-restore
+          /p:CollectCoverage=true
+          /p:CoverletOutput=${{ github.workspace }}/coverage-csharp/
+          /p:CoverletOutputFormat=cobertura
+          '/p:Include=[Penghou.Hetu.CSharp]*'
+          /p:Threshold=75
+          /p:ThresholdType=line%2cbranch
+      - name: Test and coverage (LatticeDb)
+        run: >
+          dotnet test tests/Penghou.Hetu.LatticeDb.Tests/Penghou.Hetu.LatticeDb.Tests.csproj
+          -c Release --no-restore
+          /p:CollectCoverage=true
+          /p:CoverletOutput=${{ github.workspace }}/coverage-latticedb/
+          /p:CoverletOutputFormat=cobertura
+          '/p:Include=[Penghou.Hetu.LatticeDb]*'
+          /p:Threshold=70
+          /p:ThresholdType=line%2cbranch
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-results-${{ matrix.os }}
-          path: "**/TestResults/**/coverage.cobertura.xml"
+          path: |
+            coverage/
+            coverage-csharp/
+            coverage-latticedb/
+            **/TestResults/**/coverage.cobertura.xml
 
   pack:
     runs-on: ubuntu-latest
