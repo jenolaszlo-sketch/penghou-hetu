@@ -19,6 +19,19 @@ public sealed partial class CSharpCodeGraphPlugin
             ],
             StringComparer.Ordinal);
 
+        private static readonly HashSet<string> HttpEndpointAttributes = new(
+            [
+                "RouteAttribute",
+                "HttpGetAttribute",
+                "HttpPostAttribute",
+                "HttpPutAttribute",
+                "HttpDeleteAttribute",
+                "HttpPatchAttribute",
+                "HttpHeadAttribute",
+                "HttpOptionsAttribute"
+            ],
+            StringComparer.Ordinal);
+
         internal static Dictionary<string, CodePropertyValue> BuildProperties(ISymbol symbol, SyntaxNode syntax)
         {
             var properties = new Dictionary<string, CodePropertyValue>
@@ -65,6 +78,18 @@ public sealed partial class CSharpCodeGraphPlugin
                 if (symbol is IMethodSymbol &&
                     names.Intersect(TestMethodAttributes, StringComparer.Ordinal).Any())
                     properties[CodePropertyKeys.TestMethod] = new CodeBooleanProperty(true);
+                // HTTP endpoints are the same: an exact ASP.NET Core
+                // route/verb allowlist on methods; anything else is not an
+                // endpoint, never guessed. The template is bounded syntax
+                // evidence, never evaluated routing semantics.
+                if (symbol is IMethodSymbol &&
+                    names.Intersect(HttpEndpointAttributes, StringComparer.Ordinal).Any())
+                {
+                    properties[CodePropertyKeys.HttpEndpoint] = new CodeBooleanProperty(true);
+                    var template = GetRouteTemplate(symbol);
+                    if (template is not null)
+                        properties[CodePropertyKeys.RouteTemplate] = new CodeTextProperty(template);
+                }
             }
 
             if (symbol is IFieldSymbol { HasConstantValue: true } constant &&
@@ -75,14 +100,18 @@ public sealed partial class CSharpCodeGraphPlugin
                     properties[CodePropertyKeys.ConstantValue] = literal;
             }
 
-            var summary = GetDocSummary(syntax);
+            var summary = GetDocTag(syntax, "summary");
             if (summary is not null)
                 properties[CodePropertyKeys.DocSummary] = new CodeTextProperty(summary);
+
+            var remarks = GetDocTag(syntax, "remarks");
+            if (remarks is not null)
+                properties[CodePropertyKeys.DocRemarks] = new CodeTextProperty(remarks);
 
             return properties;
         }
 
-        private static string? GetDocSummary(SyntaxNode syntax)
+        private static string? GetDocTag(SyntaxNode syntax, string tag)
         {
             var firstToken = syntax.GetFirstToken(includeZeroWidth: true);
             var allTrivia = new List<SyntaxTrivia>();
@@ -103,20 +132,22 @@ public sealed partial class CSharpCodeGraphPlugin
                     !trivia.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))
                     continue;
 
-                return ExtractSummaryText(trivia.ToFullString());
+                return ExtractTagText(trivia.ToFullString(), tag);
             }
 
             return null;
         }
 
-        private static string? ExtractSummaryText(string text)
+        private static string? ExtractTagText(string text, string tag)
         {
-            var summaryStart = text.IndexOf("<summary>", StringComparison.Ordinal);
-            var summaryEnd = text.IndexOf("</summary>", StringComparison.Ordinal);
-            if (summaryStart < 0 || summaryEnd <= summaryStart)
+            var open = $"<{tag}>";
+            var close = $"</{tag}>";
+            var tagStart = text.IndexOf(open, StringComparison.Ordinal);
+            var tagEnd = text.IndexOf(close, StringComparison.Ordinal);
+            if (tagStart < 0 || tagEnd <= tagStart)
                 return null;
 
-            var inner = text[(summaryStart + 9)..summaryEnd];
+            var inner = text[(tagStart + open.Length)..tagEnd];
             var collapsed = string.Join(
                 ' ',
                 inner.Split(
@@ -128,6 +159,37 @@ public sealed partial class CSharpCodeGraphPlugin
             return collapsed.Length <= 512
                 ? collapsed
                 : collapsed[..512];
+        }
+
+        private static string? GetRouteTemplate(ISymbol symbol)
+        {
+            foreach (var attribute in symbol.GetAttributes())
+            {
+                if (attribute.AttributeClass?.Name is not string name ||
+                    !HttpEndpointAttributes.Contains(name))
+                    continue;
+
+                foreach (var argument in attribute.ConstructorArguments)
+                {
+                    if (argument.Value is string template && !string.IsNullOrWhiteSpace(template))
+                        return BoundTemplate(template);
+                }
+
+                foreach (var pair in attribute.NamedArguments)
+                {
+                    if (string.Equals(pair.Key, "Template", StringComparison.Ordinal) &&
+                        pair.Value.Value is string named && !string.IsNullOrWhiteSpace(named))
+                        return BoundTemplate(named);
+                }
+            }
+
+            return null;
+        }
+
+        private static string BoundTemplate(string template)
+        {
+            var trimmed = template.Trim();
+            return trimmed.Length <= 256 ? trimmed : trimmed[..256];
         }
 
         private static void AddModifier(List<string> modifiers, bool condition, string name)

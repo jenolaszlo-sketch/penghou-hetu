@@ -1245,6 +1245,139 @@ public sealed class CSharpCodeGraphPluginTests
                 node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
     }
 
+    [Fact]
+    public async Task ExtractAsync_EmitsDocRemarksAlongsideSummary()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Documented.cs", """
+                namespace Example;
+
+                public class Service
+                {
+                    public void None() { }
+
+                    /// <summary>Does the work.</summary>
+                    /// <remarks>Prefers batch callers; retries are host-owned.</remarks>
+                    public void Run() { }
+
+                    /// <summary>Undocumented details.</summary>
+                    public void Plain() { }
+                }
+                """));
+
+        var run = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        Assert.Equal(
+            "Does the work.",
+            ((CodeTextProperty)run.Properties[CodePropertyKeys.DocSummary]).Value);
+        Assert.Equal(
+            "Prefers batch callers; retries are host-owned.",
+            ((CodeTextProperty)run.Properties[CodePropertyKeys.DocRemarks]).Value);
+
+        var plain = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Plain");
+        Assert.True(plain.Properties.ContainsKey(CodePropertyKeys.DocSummary));
+        Assert.False(plain.Properties.ContainsKey(CodePropertyKeys.DocRemarks));
+
+        var none = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "None");
+        Assert.False(none.Properties.ContainsKey(CodePropertyKeys.DocSummary));
+        Assert.False(none.Properties.ContainsKey(CodePropertyKeys.DocRemarks));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_MarksExactAllowlistedHttpEndpoints()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Endpoints.cs", """
+                namespace Microsoft.AspNetCore.Mvc
+                {
+                    public class RouteAttribute(string template) : System.Attribute { }
+                    public class HttpGetAttribute : System.Attribute
+                    {
+                        public HttpGetAttribute() { }
+                        public HttpGetAttribute(string template) { }
+                    }
+                    public class CustomGetAttribute : System.Attribute { }
+                }
+
+                namespace Example;
+
+                public class OrdersController
+                {
+                    [Microsoft.AspNetCore.Mvc.HttpGet("api/orders/{id}")]
+                    public string Get(string id) => id;
+
+                    [Microsoft.AspNetCore.Mvc.Route("api/orders")]
+                    public void List() { }
+
+                    [Microsoft.AspNetCore.Mvc.CustomGet]
+                    public void NearMiss() { }
+
+                    public void Helper() { }
+                }
+                """));
+
+        var get = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Get");
+        Assert.True(
+            get.Properties.TryGetValue(CodePropertyKeys.HttpEndpoint, out var marker) &&
+            marker is CodeBooleanProperty { Value: true });
+        Assert.Equal(
+            "api/orders/{id}",
+            ((CodeTextProperty)get.Properties[CodePropertyKeys.RouteTemplate]).Value);
+
+        var list = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "List");
+        Assert.True(list.Properties.ContainsKey(CodePropertyKeys.HttpEndpoint));
+        Assert.Equal(
+            "api/orders",
+            ((CodeTextProperty)list.Properties[CodePropertyKeys.RouteTemplate]).Value);
+
+        // Near-miss attribute names and plain methods are never endpoints.
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name is "NearMiss" or "Helper" &&
+                node.Properties.ContainsKey(CodePropertyKeys.HttpEndpoint));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReportsSolutionScopeDiagnostics()
+    {
+        var extracted = await ExtractAsync(
+            ("src/App.sln", """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{2150E333-8FDC-42A3-9474-1A3956D46DE}") = "Docs", "Docs", "{33333333-3333-3333-3333-333333333333}"
+                EndProject
+                Global
+                \tGlobalSection(SolutionConfigurationPlatforms) = preSolution
+                \t\tDebug|Any CPU = Debug|Any CPU
+                \tEndGlobalSection
+                \tGlobalSection(NestedProjects) = preSolution
+                \t\t{11111111-1111-1111-1111-111111111111} = {33333333-3333-3333-3333-333333333333}
+                \tEndGlobalSection
+                EndGlobal
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program { }
+                """));
+
+        Assert.Contains("csharp.solution.has-configurations", extracted.Result.WarningCodes);
+        Assert.Contains("csharp.solution.has-solution-folders", extracted.Result.WarningCodes);
+        Assert.Contains("csharp.solution.has-nested-projects", extracted.Result.WarningCodes);
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {
