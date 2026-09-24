@@ -38,6 +38,7 @@ public sealed class PublicApiContractTests
             "Penghou.Hetu.CodeGraphValidationError",
             "Penghou.Hetu.CodeGraphValidationErrorKind",
             "Penghou.Hetu.CodeIndexRunId",
+            "Penghou.Hetu.CodeIndexUnitCoverage",
             "Penghou.Hetu.CodeIndexUnitId",
             "Penghou.Hetu.CodeIntegerProperty",
             "Penghou.Hetu.CodeLocation",

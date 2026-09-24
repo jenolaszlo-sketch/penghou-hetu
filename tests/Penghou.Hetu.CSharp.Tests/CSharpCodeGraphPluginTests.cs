@@ -1378,6 +1378,271 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.Contains("csharp.solution.has-nested-projects", extracted.Result.WarningCodes);
     }
 
+    [Fact]
+    public async Task ExtractAsync_CoverageReportsDetailedCandidateBreakdown()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Lib/Lib.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib/Utility.cs", """
+                namespace Lib;
+                public static class Utility
+                {
+                    public static int Add(int a, int b) => a + b;
+                }
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib/Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public int Run()
+                    {
+                        System.Console.WriteLine("hi");
+                        return Lib.Utility.Add(1, 2);
+                    }
+                }
+                """));
+
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Produced, calls.State);
+        Assert.True(calls.Candidates >= 2, $"candidates={calls.Candidates}");
+        Assert.Equal(calls.EdgesEmitted, calls.InternalTargets + calls.CrossProjectTargets);
+        Assert.True(calls.CrossProjectTargets > 0, "expected a cross-project call to Lib.Utility.Add");
+        Assert.True(calls.ExternalTargets > 0, "expected the Console.WriteLine call to count as external");
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                extracted.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName!
+                    .Contains("Console", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_LateDuplicateRegistrationStaysCrossProject()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Lib1/Lib1.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib1/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Lib2/Lib2.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib2/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib1/Lib1.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public void Run() => Example.Helper.Go();
+                }
+                """));
+
+        // NOTE: projects index in path order (App before Lib2), so the
+        // duplicate registration lands after the call was already resolved
+        // against Lib1 alone. The call below is therefore cross-project,
+        // not ambiguous; ambiguity needs its own fixture.
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.True(calls.CrossProjectTargets > 0, $"cross={calls.CrossProjectTargets}");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_AmbiguousTargetsAreCountedNeverGuessed()
+    {
+        // Zpp sorts after both libraries, so both Example.Helper
+        // registrations land before its call resolves: genuinely ambiguous.
+        var extracted = await ExtractAsync(
+            ("src/Lib1/Lib1.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib1/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Lib2/Lib2.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib2/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Zpp/Zpp.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib1/Lib1.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/Zpp/Program.cs", """
+                namespace Zpp;
+                public class Program
+                {
+                    public void Run() => Example.Helper.Go();
+                }
+                """));
+
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.True(calls.AmbiguousTargets > 0, $"ambiguous={calls.AmbiguousTargets}");
+        var program = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls && edge.SourceId == program.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PerUnitCoverageExplainsEmptyAndPartial()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Quiet/Quiet.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Quiet/Value.cs", """
+                namespace Quiet;
+                public class Value
+                {
+                    public int Number { get; set; }
+                }
+                """),
+            ("src/Broken/Broken.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Broken/Caller.cs", """
+                namespace Broken;
+                public class Caller
+                {
+                    public void Run()
+                    {
+                        MissingLibrary.DoWork();
+                    }
+                }
+                """));
+
+        Assert.Equal(2, extracted.Result.IndexUnitCoverage.Count);
+        var units = extracted.Result.IndexUnitCoverage
+            .OrderBy(unit => unit.IndexUnitId.Value, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            units.Select(unit => unit.IndexUnitId.Value).ToArray(),
+            extracted.Result.IndexUnitCoverage.Select(unit => unit.IndexUnitId.Value).ToArray());
+
+        var quiet = units.Single(unit =>
+            unit.IndexUnitId.Value == CSharpProjectUnitId("src/Quiet/Quiet.csproj"));
+        var quietCalls = quiet.Coverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Produced, quietCalls.State);
+        Assert.Equal(0, quietCalls.EdgesEmitted);
+
+        var broken = units.Single(unit =>
+            unit.IndexUnitId.Value == CSharpProjectUnitId("src/Broken/Broken.csproj"));
+        var brokenCalls = broken.Coverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Partial, brokenCalls.State);
+        Assert.True(brokenCalls.UnresolvedTargets > 0);
+
+        foreach (var unit in units)
+            Assert.Equal(7, unit.Coverage.Count);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_UnitWithoutSourcesReportsUnavailableCoverage()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Empty/Empty.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                </Project>
+                """));
+
+        var unit = Assert.Single(extracted.Result.IndexUnitCoverage);
+        foreach (var kind in new[]
+                 {
+                     CodeEdgeKinds.Inherits.Value,
+                     CodeEdgeKinds.Implements.Value,
+                     CodeEdgeKinds.Calls.Value,
+                     CodeEdgeKinds.References.Value,
+                     CodeEdgeKinds.Imports.Value
+                 })
+        {
+            var entry = unit.Coverage.Single(value => value.RelationshipKind == kind);
+            Assert.Equal(CodeRelationshipCoverageState.Unavailable, entry.State);
+        }
+    }
+
     private static async Task<Extraction> ExtractAsync(
         params (string Path, string Content)[] values)
     {

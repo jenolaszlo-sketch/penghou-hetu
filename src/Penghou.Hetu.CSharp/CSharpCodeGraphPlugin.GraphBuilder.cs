@@ -328,7 +328,47 @@ public sealed partial class CSharpCodeGraphPlugin
                 properties));
         }
 
-        private void Count(string relationshipKind, bool unresolved)
+        private void CountEmitted(string relationshipKind, CodeNodeId targetId)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.EdgesEmitted++;
+            if (_nodes.ContainsKey(targetId.Value))
+                counters.InternalTargets++;
+            else
+                counters.CrossProjectTargets++;
+        }
+
+        private void CountUnresolved(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.UnresolvedTargets++;
+        }
+
+        private void CountAmbiguous(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.AmbiguousTargets++;
+            counters.UnresolvedTargets++;
+        }
+
+        private void CountExternal(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.ExternalTargets++;
+        }
+
+        private void CountUnsupported(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.UnsupportedTargets++;
+        }
+
+        private RelationshipCounters GetCounters(string relationshipKind)
         {
             if (!_counters.TryGetValue(
                     relationshipKind,
@@ -338,10 +378,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 _counters[relationshipKind] = counters;
             }
 
-            if (unresolved)
-                counters.UnresolvedTargets++;
-            else
-                counters.EdgesEmitted++;
+            return counters;
         }
 
         private enum TargetMatch
@@ -385,22 +422,34 @@ public sealed partial class CSharpCodeGraphPlugin
             ISymbol target,
             CodeLocation location)
         {
-            var match = TryResolveTarget(target, out var targetId);
+            if (!TryResolveEmissionTarget(target, kind.Value, out var targetId))
+                return;
+
+            AddEdge(kind, sourceId, targetId, location);
+            CountEmitted(kind.Value, targetId);
+        }
+
+        /// <summary>
+        /// Resolves an emission target, counting external and ambiguous
+        /// outcomes so coverage stays honest. Returns false when no edge
+        /// may be emitted.
+        /// </summary>
+        private bool TryResolveEmissionTarget(
+            ISymbol target,
+            string relationshipKind,
+            out CodeNodeId targetId)
+        {
+            var match = TryResolveTarget(Normalize(target), out targetId);
             switch (match)
             {
                 case TargetMatch.Found:
-                    AddEdge(kind, sourceId, targetId, location);
-                    Count(kind.Value, unresolved: false);
-                    break;
+                    return true;
                 case TargetMatch.Ambiguous:
-                    // Multiple indexed declarations could be the target; never
-                    // guess between them.
-                    Count(kind.Value, unresolved: true);
-                    break;
-                case TargetMatch.External:
-                    // Externally-owned symbols (base library, packages) are
-                    // neither emitted nor counted as unresolved.
-                    break;
+                    CountAmbiguous(relationshipKind);
+                    return false;
+                default:
+                    CountExternal(relationshipKind);
+                    return false;
             }
         }
 
@@ -480,17 +529,18 @@ public sealed partial class CSharpCodeGraphPlugin
                 info.CandidateSymbols.Length == 0)
             {
                 if (SourceNodeFor(EnclosingCallable(invocation, model)) is not null)
-                    Count(CodeEdgeKinds.Calls.Value, unresolved: true);
+                    CountUnresolved(CodeEdgeKinds.Calls.Value);
                 return;
             }
 
             if (info.Symbol is not IMethodSymbol method)
                 return;
 
-            var targetNode =
-                SourceNodeFor(Normalize(method.ReducedFrom ?? method));
-            if (targetNode is null)
-                return; // external or ambiguous callee
+            if (!TryResolveEmissionTarget(
+                    method.ReducedFrom ?? method,
+                    CodeEdgeKinds.Calls.Value,
+                    out var targetNode))
+                return; // external or ambiguous callee, already counted
 
             var sourceNode =
                 SourceNodeFor(EnclosingCallable(invocation, model));
@@ -502,7 +552,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 sourceNode,
                 targetNode,
                 Location(path, invocation));
-            Count(CodeEdgeKinds.Calls.Value, unresolved: false);
+            CountEmitted(CodeEdgeKinds.Calls.Value, targetNode);
         }
 
         private void HandleCreation(
@@ -513,24 +563,26 @@ public sealed partial class CSharpCodeGraphPlugin
             var info = model.GetSymbolInfo(creation);
             if (info.Symbol is IMethodSymbol constructor)
             {
-                var constructorTarget =
-                    SourceNodeFor(Normalize(constructor));
                 var sourceNode =
                     SourceNodeFor(EnclosingCallable(creation, model));
-                if (constructorTarget is not null && sourceNode is not null)
-                {
-                    AddEdge(
-                        CodeEdgeKinds.Calls,
-                        sourceNode,
-                        constructorTarget,
-                        Location(path, creation));
-                    Count(CodeEdgeKinds.Calls.Value, unresolved: false);
-                }
+                if (sourceNode is null)
+                    return;
+                if (!TryResolveEmissionTarget(
+                        constructor,
+                        CodeEdgeKinds.Calls.Value,
+                        out var constructorTarget))
+                    return; // external or ambiguous callee, already counted
+                AddEdge(
+                    CodeEdgeKinds.Calls,
+                    sourceNode,
+                    constructorTarget,
+                    Location(path, creation));
+                CountEmitted(CodeEdgeKinds.Calls.Value, constructorTarget);
             }
             else if (info.Symbol is null && info.CandidateSymbols.Length == 0 &&
                      SourceNodeFor(EnclosingCallable(creation, model)) is not null)
             {
-                Count(CodeEdgeKinds.Calls.Value, unresolved: true);
+                CountUnresolved(CodeEdgeKinds.Calls.Value);
             }
         }
 
@@ -558,20 +610,22 @@ public sealed partial class CSharpCodeGraphPlugin
 
             if (info.Symbol is IMethodSymbol constructor)
             {
-                var targetNode = SourceNodeFor(Normalize(constructor));
-                if (targetNode is null)
-                    return;
+                if (!TryResolveEmissionTarget(
+                        constructor,
+                        CodeEdgeKinds.Calls.Value,
+                        out var targetNode))
+                    return; // external or ambiguous callee, already counted
 
                 AddEdge(
                     CodeEdgeKinds.Calls,
                     sourceNode,
                     targetNode,
                     Location(path, syntax));
-                Count(CodeEdgeKinds.Calls.Value, unresolved: false);
+                CountEmitted(CodeEdgeKinds.Calls.Value, targetNode);
             }
             else if (info.Symbol is null && info.CandidateSymbols.Length == 0)
             {
-                Count(CodeEdgeKinds.Calls.Value, unresolved: true);
+                CountUnresolved(CodeEdgeKinds.Calls.Value);
             }
         }
 
@@ -584,6 +638,9 @@ public sealed partial class CSharpCodeGraphPlugin
             if (syntax is IdentifierNameSyntax { Identifier.ValueText: "var" } &&
                 info.Symbol is null)
             {
+                // `var` without a resolved symbol is deliberately omitted:
+                // there is no target to attribute.
+                CountUnsupported(CodeEdgeKinds.References.Value);
                 return;
             }
 
@@ -605,7 +662,7 @@ public sealed partial class CSharpCodeGraphPlugin
             }
             else if (symbol is null && info.CandidateSymbols.Length == 0)
             {
-                Count(CodeEdgeKinds.References.Value, unresolved: true);
+                CountUnresolved(CodeEdgeKinds.References.Value);
             }
         }
 
@@ -630,7 +687,7 @@ public sealed partial class CSharpCodeGraphPlugin
             }
             else if (info.Symbol is null && info.CandidateSymbols.Length == 0)
             {
-                Count(CodeEdgeKinds.References.Value, unresolved: true);
+                CountUnresolved(CodeEdgeKinds.References.Value);
             }
         }
 
@@ -675,7 +732,12 @@ public sealed partial class CSharpCodeGraphPlugin
                 ? alias.Target
                 : info.Symbol;
             if (target is not INamespaceSymbol and not INamedTypeSymbol)
+            {
+                // Aliases to non-namespace/non-type members are deliberately
+                // omitted: imports model namespace/type scopes only.
+                CountUnsupported(CodeEdgeKinds.Imports.Value);
                 return;
+            }
 
             var isGlobal = usingDirective.GlobalKeyword != default;
             var containingNamespace = usingDirective.Ancestors()
@@ -710,11 +772,15 @@ public sealed partial class CSharpCodeGraphPlugin
                         [CodePropertyKeys.ImportGlobal] = new CodeBooleanProperty(isGlobal),
                         [CodePropertyKeys.ImportScope] = new CodeTextProperty(scope)
                     });
-                Count(CodeEdgeKinds.Imports.Value, unresolved: false);
+                CountEmitted(CodeEdgeKinds.Imports.Value, targetNode);
             }
             else if (match == TargetMatch.Ambiguous)
             {
-                Count(CodeEdgeKinds.Imports.Value, unresolved: true);
+                CountAmbiguous(CodeEdgeKinds.Imports.Value);
+            }
+            else
+            {
+                CountExternal(CodeEdgeKinds.Imports.Value);
             }
         }
 

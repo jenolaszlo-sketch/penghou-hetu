@@ -49,6 +49,7 @@ public sealed partial class CSharpCodeGraphPlugin
             var runSymbols = new RunSymbols();
             var relationshipTotals = new Dictionary<string, RelationshipCounters>(
                 StringComparer.Ordinal);
+            var indexUnitCoverage = new List<CodeIndexUnitCoverage>();
             foreach (var project in OrderProjects(projects, projectByPath, warningCodes))
             {
                 var parseOptions = CreateParseOptions(project);
@@ -104,8 +105,20 @@ public sealed partial class CSharpCodeGraphPlugin
                         : new RelationshipCounters();
                     total.EdgesEmitted += counters.EdgesEmitted;
                     total.UnresolvedTargets += counters.UnresolvedTargets;
+                    total.Candidates += counters.Candidates;
+                    total.InternalTargets += counters.InternalTargets;
+                    total.CrossProjectTargets += counters.CrossProjectTargets;
+                    total.ExternalTargets += counters.ExternalTargets;
+                    total.AmbiguousTargets += counters.AmbiguousTargets;
+                    total.UnsupportedTargets += counters.UnsupportedTargets;
                     relationshipTotals[kind] = total;
                 }
+
+                indexUnitCoverage.Add(new CodeIndexUnitCoverage(
+                    new CodeIndexUnitId(CSharpProjectDiscovery.IndexUnitId(project.Path)),
+                    BuildCoverage(
+                        builder.Counters,
+                        hasSources: trees.Length > 0)));
             }
 
             var diagnostics = allDiagnostics
@@ -135,11 +148,13 @@ public sealed partial class CSharpCodeGraphPlugin
                     diagnostic.Severity == DiagnosticSeverity.Error &&
                     UnresolvedDiagnosticIds.Contains(diagnostic.Id)),
                 warningCodes: warningCodes.Order(StringComparer.Ordinal).Take(100).ToArray(),
-                relationshipCoverage: BuildCoverage(relationshipTotals));
+                relationshipCoverage: BuildCoverage(relationshipTotals, hasSources: projects.Count > 0),
+                indexUnitCoverage: indexUnitCoverage);
         }
 
         private static IReadOnlyCollection<CodeRelationshipCoverage> BuildCoverage(
-            Dictionary<string, RelationshipCounters> totals)
+            IReadOnlyDictionary<string, RelationshipCounters> totals,
+            bool hasSources)
         {
             var coverage = new List<CodeRelationshipCoverage>();
             foreach (var kind in new[]
@@ -156,16 +171,7 @@ public sealed partial class CSharpCodeGraphPlugin
                     out var value)
                     ? value
                     : new RelationshipCounters();
-                var state = counters.EdgesEmitted == 0 && counters.UnresolvedTargets == 0
-                    ? CodeRelationshipCoverageState.NotProduced
-                    : counters.UnresolvedTargets > 0
-                        ? CodeRelationshipCoverageState.Partial
-                        : CodeRelationshipCoverageState.Produced;
-                coverage.Add(new(
-                    kind.Value,
-                    state,
-                    counters.EdgesEmitted,
-                    counters.UnresolvedTargets));
+                coverage.Add(ToCoverage(kind.Value, counters, hasSources));
             }
 
             // Return/parameter typing is deliberately not produced yet: the
@@ -182,6 +188,38 @@ public sealed partial class CSharpCodeGraphPlugin
                 0,
                 0));
             return coverage;
+        }
+
+        private static CodeRelationshipCoverage ToCoverage(
+            string kind,
+            RelationshipCounters counters,
+            bool hasSources)
+        {
+            // A scan that ran and found nothing is a complete empty result,
+            // not a missing one. Only a unit without sources cannot claim
+            // anything about its relationships.
+            if (counters.Candidates == 0)
+            {
+                var empty = hasSources
+                    ? CodeRelationshipCoverageState.Produced
+                    : CodeRelationshipCoverageState.Unavailable;
+                return new(kind, empty, 0, 0);
+            }
+
+            var state = counters.UnresolvedTargets > 0
+                ? CodeRelationshipCoverageState.Partial
+                : CodeRelationshipCoverageState.Produced;
+            return new(
+                kind,
+                state,
+                counters.EdgesEmitted,
+                counters.UnresolvedTargets,
+                counters.Candidates,
+                counters.InternalTargets,
+                counters.CrossProjectTargets,
+                counters.ExternalTargets,
+                counters.AmbiguousTargets,
+                counters.UnsupportedTargets);
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -218,6 +256,12 @@ public sealed partial class CSharpCodeGraphPlugin
     {
         public int EdgesEmitted;
         public int UnresolvedTargets;
+        public int Candidates;
+        public int InternalTargets;
+        public int CrossProjectTargets;
+        public int ExternalTargets;
+        public int AmbiguousTargets;
+        public int UnsupportedTargets;
     }
 
     private static IReadOnlyList<CSharpProjectModel> OrderProjects(
