@@ -89,6 +89,23 @@ internal static partial class CSharpProjectDiscovery
             .Distinct()
             .Order(StringComparer.Ordinal)
             .ToList();
+        // Solution scope is canonical-set only: configurations, solution
+        // folders, and nested-project sections are not evaluated, but their
+        // presence is reported so consumers can distinguish a clean
+        // canonical set from a partially understood solution. .slnx needs
+        // no such diagnostics: folders are its native structure.
+        var solutionTexts = solutionPaths
+            .Where(path => path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            .Select(path => content[path]);
+        if (solutionTexts.Any(text => text.Contains(
+                "SolutionConfigurationPlatforms", StringComparison.Ordinal)))
+            warnings.Add("csharp.solution.has-configurations");
+        if (solutionTexts.Any(text => text.Contains(
+                "2150E333-8FDC-42A3-9474-1A3956D46DE", StringComparison.OrdinalIgnoreCase)))
+            warnings.Add("csharp.solution.has-solution-folders");
+        if (solutionTexts.Any(text => text.Contains(
+                "NestedProjects", StringComparison.Ordinal)))
+            warnings.Add("csharp.solution.has-nested-projects");
         var included = discovered
             .Where(project => listed.Contains(project.Path, PathComparer))
             .ToList();

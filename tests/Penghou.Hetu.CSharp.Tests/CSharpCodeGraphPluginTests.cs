@@ -81,6 +81,99 @@ public sealed class CSharpCodeGraphPluginTests
             JsonSerializer.Serialize(first.Declarations),
             JsonSerializer.Serialize(second.Declarations));
         Assert.Equal(JsonSerializer.Serialize(first.Edges), JsonSerializer.Serialize(second.Edges));
+        Assert.Equal(
+            JsonSerializer.Serialize(first.Result.RelationshipCoverage),
+            JsonSerializer.Serialize(second.Result.RelationshipCoverage));
+        Assert.Equal(
+            JsonSerializer.Serialize(first.Result.IndexUnitCoverage),
+            JsonSerializer.Serialize(second.Result.IndexUnitCoverage));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_RebindRemovesStaleCallRelationships()
+    {
+        var helper = ("src/Helper.cs", """
+            namespace Example;
+            public static class Helper
+            {
+                public static void A() { }
+                public static void B() { }
+            }
+            """);
+        var callerV1 = ("src/Caller.cs", """
+            namespace Example;
+            public class Caller
+            {
+                public void Run() => Helper.A();
+            }
+            """);
+        var callerV2 = ("src/Caller.cs", """
+            namespace Example;
+            public class Caller
+            {
+                public void Run() => Helper.B();
+            }
+            """);
+
+        var before = await ExtractAsync(helper, callerV1);
+        var runBefore = before.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var targetA = before.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "A");
+        Assert.Contains(
+            before.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runBefore.Id && edge.TargetId == targetA.Id);
+
+        // Only the caller file changes; the helper file is byte-identical.
+        // The rebind must not leave the old call behind.
+        var after = await ExtractAsync(helper, callerV2);
+        var runAfter = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var targetB = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "B");
+        var targetAAfter = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "A");
+        Assert.Contains(
+            after.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runAfter.Id && edge.TargetId == targetB.Id);
+        Assert.DoesNotContain(
+            after.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runAfter.Id && edge.TargetId == targetAAfter.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ChunksRelationshipBatchesWithinSinkLimits()
+    {
+        var files = Enumerable.Range(0, 12).Select(index => (
+            $"src/Worker{index}.cs",
+            "namespace Example;\n" +
+            $"public class Worker{index}\n" +
+            "{\n" +
+            "    public void Run() => Helper.Ping();\n" +
+            "}\n")).ToArray();
+        var helper = ("src/Helper.cs", """
+            namespace Example;
+            public static class Helper
+            {
+                public static void Ping() { }
+            }
+            """);
+
+        var extracted = await ExtractAsync(
+            new CodeGraphBatchLimits(maxNodes: 50, maxDeclarations: 50, maxEdges: 5),
+            [.. files, helper]);
+
+        var ping = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Ping");
+        var callEdges = extracted.Edges
+            .Where(edge => edge.Kind == CodeEdgeKinds.Calls && edge.TargetId == ping.Id)
+            .ToArray();
+        Assert.Equal(12, callEdges.Length);
+        Assert.True(extracted.Batches.Count > 1, $"batches={extracted.Batches.Count}");
+        Assert.True(extracted.Batches[^1].CompletesIndexUnit);
     }
 
     [Fact]
@@ -409,7 +502,7 @@ public sealed class CSharpCodeGraphPluginTests
                     null)
             ]);
         var plugin = new CSharpCodeGraphPlugin();
-        var sink = new RecordingSink();
+        var sink = new RecordingSink(new CodeGraphBatchLimits());
 
         await using var session = await plugin.CreateSessionAsync(context);
         var result = await session.ExtractAsync(sink);
@@ -471,6 +564,270 @@ public sealed class CSharpCodeGraphPluginTests
             edge.Kind == CodeEdgeKinds.Calls &&
             edge.SourceId == greet.Id &&
             edge.TargetId == coreOverride.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ClassifiesExplicitInterfaceRelationshipsWithoutTransitiveEdges()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Contracts.cs", """
+                namespace Example;
+                public interface IParent { }
+                public interface IChild : IParent { }
+                """),
+            ("src/Service.cs", """
+                namespace Example;
+                public sealed class Service : IChild { }
+                """));
+
+        var parent = extracted.Nodes.Single(node => node.QualifiedName == "Example.IParent");
+        var child = extracted.Nodes.Single(node => node.QualifiedName == "Example.IChild");
+        var service = extracted.Nodes.Single(node => node.QualifiedName == "Example.Service");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Inherits &&
+            edge.SourceId == child.Id &&
+            edge.TargetId == parent.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements && edge.SourceId == child.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements &&
+            edge.SourceId == service.Id &&
+            edge.TargetId == child.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.SourceId == service.Id && edge.TargetId == parent.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_EmitsImplicitCreationAndConstructorInitializerCalls()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Constructors.cs", """
+                namespace Example;
+
+                public class Base
+                {
+                    public Base(int value) { }
+                }
+
+                public sealed class Derived : Base
+                {
+                    public Derived() : this(1) { }
+                    public Derived(int value) : base(value) { }
+                    public static Derived Create() => new();
+                }
+                """));
+
+        var constructors = extracted.Nodes
+            .Where(node => node.Kind == CodeNodeKinds.Callable && node.Name == "Derived")
+            .ToArray();
+        var parameterless = Assert.Single(constructors, node =>
+            node.QualifiedName!.EndsWith("Derived()", StringComparison.Ordinal));
+        var withValue = Assert.Single(constructors, node =>
+            node.QualifiedName!.EndsWith("Derived(int)", StringComparison.Ordinal));
+        var baseConstructor = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.Name == "Base" &&
+            node.QualifiedName!.EndsWith("Base(int)", StringComparison.Ordinal));
+        var create = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Create");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == parameterless.Id && edge.TargetId == withValue.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == withValue.Id && edge.TargetId == baseConstructor.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == create.Id && edge.TargetId == parameterless.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ModelsLocalFunctionsAndUsesThemAsCallOwners()
+    {
+        var extracted = await ExtractAsync(
+            ("src/LocalFunctions.cs", """
+                namespace Example;
+
+                public static class Operations
+                {
+                    public static int Double(int value) => value * 2;
+
+                    public static int Run(int value)
+                    {
+                        int Transform(int item) => Double(item);
+                        return Transform(value);
+                    }
+                }
+                """));
+
+        var run = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var transform = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Transform");
+        var doubleMethod = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Double");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Contains &&
+            edge.SourceId == run.Id && edge.TargetId == transform.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id && edge.TargetId == transform.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == transform.Id && edge.TargetId == doubleMethod.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id && edge.TargetId == doubleMethod.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReferencesUseTheSmallestIndexedOwner()
+    {
+        var extracted = await ExtractAsync(
+            ("src/References.cs", """
+                using System;
+                using System.Collections.Generic;
+                namespace Example;
+
+                public sealed class MarkerAttribute : Attribute { }
+
+                public class Entity
+                {
+                    public int Id { get; init; }
+                }
+
+                public class Consumer
+                {
+                    private Entity _field = new();
+                    public Entity Current { get; set; } = new();
+
+                    [Marker]
+                    public Entity Select<T>(Entity item) where T : Entity
+                    {
+                        List<Entity> values = [item];
+                        var type = typeof(Entity);
+                        var name = nameof(Entity);
+                        return item.Id == 0 ? _field : values[0];
+                    }
+                }
+                """));
+
+        var entity = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.Entity");
+        var marker = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Type &&
+            node.QualifiedName == "Example.MarkerAttribute");
+        var id = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Property && node.Name == "Id");
+        var field = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Field && node.Name == "_field");
+        var current = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Property && node.Name == "Current");
+        var select = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Select");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == field.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == current.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == marker.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == id.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_RepeatedReferencesKeepFirstEvidenceAndVarIsNotUnresolved()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Repeated.cs", """
+                namespace Example;
+                public class Target { }
+                public class Consumer
+                {
+                    public void Run()
+                    {
+                        Target first = new();
+                        Target second = new();
+                        var inferred = first;
+                    }
+                }
+                """));
+
+        var target = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Target");
+        var run = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var reference = Assert.Single(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == run.Id && edge.TargetId == target.Id);
+
+        Assert.Equal(7, reference.Evidence.Location!.StartLine);
+        var coverage = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.References.Value);
+        Assert.Equal(0, coverage.UnresolvedTargets);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ImportsPreserveAliasFlagsAndSemanticScope()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Targets.cs", """
+                namespace Example.Targets
+                {
+                    public class Widget { }
+                    public static class Helpers { public static void Run() { } }
+                }
+                namespace Example.Shared { public class SharedValue { } }
+                """),
+            ("src/Imports.cs", """
+                global using Example.Shared;
+                global using WidgetAlias = Example.Targets.Widget;
+                global using static Example.Targets.Helpers;
+                using Example.Targets;
+
+                namespace ConsumerSpace
+                {
+                    using Example.Shared;
+                    public class Consumer { }
+                }
+                """));
+
+        var project = Assert.Single(extracted.Nodes, node => node.Kind == CodeNodeKinds.Project);
+        var file = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.File && node.QualifiedName == "src/Imports.cs");
+        var consumerNamespace = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Namespace && node.QualifiedName == "ConsumerSpace");
+        var widget = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Targets.Widget");
+        var helpers = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Targets.Helpers");
+
+        var imports = extracted.Edges
+            .Where(edge => edge.Kind == CodeEdgeKinds.Imports)
+            .ToArray();
+        Assert.Contains(imports, edge =>
+            edge.SourceId == project.Id && edge.TargetId == widget.Id &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportAlias]).Value == "WidgetAlias" &&
+            ((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportGlobal]).Value);
+        Assert.Contains(imports, edge =>
+            edge.SourceId == project.Id && edge.TargetId == helpers.Id &&
+            ((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportStatic]).Value &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "project");
+        Assert.Contains(imports, edge =>
+            edge.SourceId == file.Id &&
+            !((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportGlobal]).Value &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "file");
+        Assert.Contains(imports, edge =>
+            edge.SourceId == consumerNamespace.Id &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "namespace");
     }
 
     [Fact]
@@ -981,7 +1338,410 @@ public sealed class CSharpCodeGraphPluginTests
                 node.Properties.ContainsKey(CodePropertyKeys.TestMethod));
     }
 
+    [Fact]
+    public async Task ExtractAsync_EmitsDocRemarksAlongsideSummary()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Documented.cs", """
+                namespace Example;
+
+                public class Service
+                {
+                    public void None() { }
+
+                    /// <summary>Does the work.</summary>
+                    /// <remarks>Prefers batch callers; retries are host-owned.</remarks>
+                    public void Run() { }
+
+                    /// <summary>Undocumented details.</summary>
+                    public void Plain() { }
+                }
+                """));
+
+        var run = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        Assert.Equal(
+            "Does the work.",
+            ((CodeTextProperty)run.Properties[CodePropertyKeys.DocSummary]).Value);
+        Assert.Equal(
+            "Prefers batch callers; retries are host-owned.",
+            ((CodeTextProperty)run.Properties[CodePropertyKeys.DocRemarks]).Value);
+
+        var plain = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Plain");
+        Assert.True(plain.Properties.ContainsKey(CodePropertyKeys.DocSummary));
+        Assert.False(plain.Properties.ContainsKey(CodePropertyKeys.DocRemarks));
+
+        var none = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "None");
+        Assert.False(none.Properties.ContainsKey(CodePropertyKeys.DocSummary));
+        Assert.False(none.Properties.ContainsKey(CodePropertyKeys.DocRemarks));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_MarksExactAllowlistedHttpEndpoints()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Endpoints.cs", """
+                namespace Microsoft.AspNetCore.Mvc
+                {
+                    public class RouteAttribute(string template) : System.Attribute { }
+                    public class HttpGetAttribute : System.Attribute
+                    {
+                        public HttpGetAttribute() { }
+                        public HttpGetAttribute(string template) { }
+                    }
+                    public class CustomGetAttribute : System.Attribute { }
+                }
+
+                namespace Example;
+
+                public class OrdersController
+                {
+                    [Microsoft.AspNetCore.Mvc.HttpGet("api/orders/{id}")]
+                    public string Get(string id) => id;
+
+                    [Microsoft.AspNetCore.Mvc.Route("api/orders")]
+                    public void List() { }
+
+                    [Microsoft.AspNetCore.Mvc.CustomGet]
+                    public void NearMiss() { }
+
+                    public void Helper() { }
+                }
+                """));
+
+        var get = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Get");
+        Assert.True(
+            get.Properties.TryGetValue(CodePropertyKeys.HttpEndpoint, out var marker) &&
+            marker is CodeBooleanProperty { Value: true });
+        Assert.Equal(
+            "api/orders/{id}",
+            ((CodeTextProperty)get.Properties[CodePropertyKeys.RouteTemplate]).Value);
+
+        var list = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "List");
+        Assert.True(list.Properties.ContainsKey(CodePropertyKeys.HttpEndpoint));
+        Assert.Equal(
+            "api/orders",
+            ((CodeTextProperty)list.Properties[CodePropertyKeys.RouteTemplate]).Value);
+
+        // Near-miss attribute names and plain methods are never endpoints.
+        Assert.DoesNotContain(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable &&
+                node.Name is "NearMiss" or "Helper" &&
+                node.Properties.ContainsKey(CodePropertyKeys.HttpEndpoint));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReportsSolutionScopeDiagnostics()
+    {
+        var extracted = await ExtractAsync(
+            ("src/App.sln", """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{2150E333-8FDC-42A3-9474-1A3956D46DE}") = "Docs", "Docs", "{33333333-3333-3333-3333-333333333333}"
+                EndProject
+                Global
+                \tGlobalSection(SolutionConfigurationPlatforms) = preSolution
+                \t\tDebug|Any CPU = Debug|Any CPU
+                \tEndGlobalSection
+                \tGlobalSection(NestedProjects) = preSolution
+                \t\t{11111111-1111-1111-1111-111111111111} = {33333333-3333-3333-3333-333333333333}
+                \tEndGlobalSection
+                EndGlobal
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program { }
+                """));
+
+        Assert.Contains("csharp.solution.has-configurations", extracted.Result.WarningCodes);
+        Assert.Contains("csharp.solution.has-solution-folders", extracted.Result.WarningCodes);
+        Assert.Contains("csharp.solution.has-nested-projects", extracted.Result.WarningCodes);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_CoverageReportsDetailedCandidateBreakdown()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Lib/Lib.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib/Utility.cs", """
+                namespace Lib;
+                public static class Utility
+                {
+                    public static int Add(int a, int b) => a + b;
+                }
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib/Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public int Run()
+                    {
+                        System.Console.WriteLine("hi");
+                        return Lib.Utility.Add(1, 2);
+                    }
+                }
+                """));
+
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Produced, calls.State);
+        Assert.True(calls.Candidates >= 2, $"candidates={calls.Candidates}");
+        Assert.Equal(calls.EdgesEmitted, calls.InternalTargets + calls.CrossProjectTargets);
+        Assert.True(calls.CrossProjectTargets > 0, "expected a cross-project call to Lib.Utility.Add");
+        Assert.True(calls.ExternalTargets > 0, "expected the Console.WriteLine call to count as external");
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                extracted.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName!
+                    .Contains("Console", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_LateDuplicateRegistrationStaysCrossProject()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Lib1/Lib1.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib1/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Lib2/Lib2.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib2/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib1/Lib1.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Program.cs", """
+                namespace App;
+                public class Program
+                {
+                    public void Run() => Example.Helper.Go();
+                }
+                """));
+
+        // NOTE: projects index in path order (App before Lib2), so the
+        // duplicate registration lands after the call was already resolved
+        // against Lib1 alone. The call below is therefore cross-project,
+        // not ambiguous; ambiguity needs its own fixture.
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.True(calls.CrossProjectTargets > 0, $"cross={calls.CrossProjectTargets}");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_AmbiguousTargetsAreCountedNeverGuessed()
+    {
+        // Zpp sorts after both libraries, so both Example.Helper
+        // registrations land before its call resolves: genuinely ambiguous.
+        var extracted = await ExtractAsync(
+            ("src/Lib1/Lib1.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib1/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Lib2/Lib2.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Lib2/Helper.cs", """
+                namespace Example;
+                public static class Helper
+                {
+                    public static void Go() { }
+                }
+                """),
+            ("src/Zpp/Zpp.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib1/Lib1.csproj" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/Zpp/Program.cs", """
+                namespace Zpp;
+                public class Program
+                {
+                    public void Run() => Example.Helper.Go();
+                }
+                """));
+
+        var calls = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.True(calls.AmbiguousTargets > 0, $"ambiguous={calls.AmbiguousTargets}");
+        var program = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls && edge.SourceId == program.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PerUnitCoverageExplainsEmptyAndPartial()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Quiet/Quiet.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Quiet/Value.cs", """
+                namespace Quiet;
+                public class Value
+                {
+                    public int Number { get; set; }
+                }
+                """),
+            ("src/Broken/Broken.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """),
+            ("src/Broken/Caller.cs", """
+                namespace Broken;
+                public class Caller
+                {
+                    public void Run()
+                    {
+                        MissingLibrary.DoWork();
+                    }
+                }
+                """));
+
+        Assert.Equal(2, extracted.Result.IndexUnitCoverage.Count);
+        var units = extracted.Result.IndexUnitCoverage
+            .OrderBy(unit => unit.IndexUnitId.Value, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(
+            units.Select(unit => unit.IndexUnitId.Value).ToArray(),
+            extracted.Result.IndexUnitCoverage.Select(unit => unit.IndexUnitId.Value).ToArray());
+
+        var quiet = units.Single(unit =>
+            unit.IndexUnitId.Value == CSharpProjectUnitId("src/Quiet/Quiet.csproj"));
+        var quietCalls = quiet.Coverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Produced, quietCalls.State);
+        Assert.Equal(0, quietCalls.EdgesEmitted);
+
+        var broken = units.Single(unit =>
+            unit.IndexUnitId.Value == CSharpProjectUnitId("src/Broken/Broken.csproj"));
+        var brokenCalls = broken.Coverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.Calls.Value);
+        Assert.Equal(CodeRelationshipCoverageState.Partial, brokenCalls.State);
+        Assert.True(brokenCalls.UnresolvedTargets > 0);
+
+        foreach (var unit in units)
+            Assert.Equal(7, unit.Coverage.Count);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_UnitWithoutSourcesReportsUnavailableCoverage()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Empty/Empty.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                </Project>
+                """));
+
+        var unit = Assert.Single(extracted.Result.IndexUnitCoverage);
+        foreach (var kind in new[]
+                 {
+                     CodeEdgeKinds.Inherits.Value,
+                     CodeEdgeKinds.Implements.Value,
+                     CodeEdgeKinds.Calls.Value,
+                     CodeEdgeKinds.References.Value,
+                     CodeEdgeKinds.Imports.Value
+                 })
+        {
+            var entry = unit.Coverage.Single(value => value.RelationshipKind == kind);
+            Assert.Equal(CodeRelationshipCoverageState.Unavailable, entry.State);
+        }
+    }
+
+    private static Task<Extraction> ExtractAsync(
+        params (string Path, string Content)[] values) =>
+        ExtractAsync(new CodeGraphBatchLimits(), values);
+
     private static async Task<Extraction> ExtractAsync(
+        CodeGraphBatchLimits limits,
         params (string Path, string Content)[] values)
     {
         var sources = values.Select(value => new CodeGraphSource(
@@ -995,7 +1755,7 @@ public sealed class CSharpCodeGraphPluginTests
             new CodeIndexRunId("run:test"),
             sources);
         var plugin = new CSharpCodeGraphPlugin();
-        var sink = new RecordingSink();
+        var sink = new RecordingSink(limits);
 
         await using var session = await plugin.CreateSessionAsync(context);
         var result = await session.ExtractAsync(sink);
@@ -1012,7 +1772,8 @@ public sealed class CSharpCodeGraphPluginTests
             sink.Batches.SelectMany(batch => batch.Declarations).OrderBy(value => value.Id.Value, StringComparer.Ordinal).ToArray(),
             sink.Batches.SelectMany(batch => batch.Edges).OrderBy(edge => edge.Id.Value, StringComparer.Ordinal).ToArray(),
             result,
-            sink.Batches.Select(batch => batch.Origin.IndexUnitId).Distinct().ToArray());
+            sink.Batches.Select(batch => batch.Origin.IndexUnitId).Distinct().ToArray(),
+            sink.Batches.ToArray());
     }
 
     private static string Hash(string content) =>
@@ -1022,9 +1783,9 @@ public sealed class CSharpCodeGraphPluginTests
     private static string CSharpProjectUnitId(string projectPath) =>
         $"csharp:project:{Hash(projectPath)}";
 
-    private sealed class RecordingSink : ICodeGraphSink
+    private sealed class RecordingSink(CodeGraphBatchLimits limits) : ICodeGraphSink
     {
-        public CodeGraphBatchLimits Limits { get; } = new();
+        public CodeGraphBatchLimits Limits { get; } = limits;
         public List<CodeGraphBatch> Batches { get; } = [];
 
         public ValueTask WriteBatchAsync(
@@ -1042,6 +1803,7 @@ public sealed class CSharpCodeGraphPluginTests
         IReadOnlyList<CodeGraphDeclaration> Declarations,
         IReadOnlyList<CodeGraphEdge> Edges,
         CodeGraphExtractionResult Result,
-        IReadOnlyList<CodeIndexUnitId> UnitIds);
+        IReadOnlyList<CodeIndexUnitId> UnitIds,
+        IReadOnlyList<CodeGraphBatch> Batches);
 }
 

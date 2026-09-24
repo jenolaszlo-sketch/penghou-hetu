@@ -25,8 +25,6 @@ public sealed partial class CSharpCodeGraphPlugin
             new(StringComparer.Ordinal);
         private readonly HashSet<string> _contributingSources = new(StringComparer.Ordinal);
         private readonly Dictionary<string, CodeNodeId> _fileNodes = new(StringComparer.Ordinal);
-        private readonly List<(ISymbol Symbol, CodeNodeId NodeId, CodeLocation Location)> _declared =
-            [];
         private readonly List<(string Path, SyntaxNode Root, SemanticModel Model)> _syntax = [];
         private readonly Dictionary<string, RelationshipCounters> _counters =
             new(StringComparer.Ordinal);
@@ -138,39 +136,13 @@ public sealed partial class CSharpCodeGraphPlugin
         /// Second pass over the completed declaration set: resolves semantic
         /// relationships now that every node of the project exists. Targets
         /// resolve against this project first, then any project processed
-        /// earlier in dependency order; targets outside the indexed repository
-        /// are skipped silently, and genuinely unresolved targets are counted
-        /// per relationship kind instead of producing guessed edges.
+        /// earlier in dependency order; externally-owned targets are counted
+        /// as external rather than emitted or guessed, and genuinely
+        /// unresolved targets are counted per relationship kind instead of
+        /// producing guessed edges.
         /// </summary>
         public void AddRelationships(CancellationToken cancellationToken)
         {
-            foreach (var (symbol, nodeId, location) in _declared)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (symbol is not INamedTypeSymbol namedType)
-                    continue;
-
-                // Only skip the implicit object base; SpecialType.None means
-                // a normal user-defined base class.
-                if (namedType.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
-                {
-                    TryAddRelationshipEdge(
-                        CodeEdgeKinds.Inherits,
-                        nodeId,
-                        Normalize(baseType),
-                        location);
-                }
-
-                foreach (var interfaceType in namedType.Interfaces)
-                {
-                    TryAddRelationshipEdge(
-                        CodeEdgeKinds.Implements,
-                        nodeId,
-                        Normalize(interfaceType),
-                        location);
-                }
-            }
-
             foreach (var (path, root, model) in _syntax)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -179,29 +151,33 @@ public sealed partial class CSharpCodeGraphPlugin
                     cancellationToken.ThrowIfCancellationRequested();
                     switch (syntax)
                     {
+                        case TypeDeclarationSyntax typeDeclaration:
+                            HandleBaseTypes(path, typeDeclaration, model);
+                            break;
                         case InvocationExpressionSyntax invocation:
                             HandleInvocation(path, invocation, model);
                             break;
                         case ObjectCreationExpressionSyntax creation:
                             HandleCreation(path, creation, model);
                             break;
-                        case TypeOfExpressionSyntax typeOf:
-                            HandleTypeUsage(path, typeOf.Type, model, typeOf.GetLocation());
+                        case ImplicitObjectCreationExpressionSyntax creation:
+                            HandleImplicitCreation(path, creation, model);
                             break;
-                        case IsPatternExpressionSyntax
-                        {
-                            Pattern: TypePatternSyntax typePattern
-                        }:
-                            HandleTypeUsage(path, typePattern.Type, model, typePattern.GetLocation());
-                            break;
-                        case BinaryExpressionSyntax binary when
-                            binary.IsKind(SyntaxKind.IsExpression) ||
-                            binary.IsKind(SyntaxKind.AsExpression):
-                            if (binary.Right is TypeSyntax rightType)
-                                HandleTypeUsage(path, rightType, model, binary.GetLocation());
+                        case ConstructorInitializerSyntax initializer:
+                            HandleConstructorInitializer(path, initializer, model);
                             break;
                         case UsingDirectiveSyntax usingDirective:
                             HandleUsingDirective(path, usingDirective, model);
+                            break;
+                        case AttributeSyntax attribute:
+                            HandleAttributeReference(path, attribute, model);
+                            break;
+                        case SimpleNameSyntax name when
+                            name.FirstAncestorOrSelf<UsingDirectiveSyntax>() is null:
+                            HandleReference(path, name, model);
+                            break;
+                        case PredefinedTypeSyntax predefined:
+                            HandleReference(path, predefined, model);
                             break;
                     }
                 }
@@ -305,7 +281,6 @@ public sealed partial class CSharpCodeGraphPlugin
                     AddEdge(CodeEdgeKinds.Contains, containingId, nodeId, location);
             }
 
-            _declared.Add((Normalize(symbol), nodeId, location));
         }
 
 
@@ -336,11 +311,12 @@ public sealed partial class CSharpCodeGraphPlugin
             CodeNodeId target,
             CodeLocation location,
             string? discriminator = null,
-            CodeEvidenceKind evidenceKind = CodeEvidenceKind.Semantic)
+            CodeEvidenceKind evidenceKind = CodeEvidenceKind.Semantic,
+            IReadOnlyDictionary<string, CodePropertyValue>? properties = null)
         {
             var id = new CodeEdgeId(
                 $"csharp:{Hash($"{kind.Value}\n{source.Value}\n{target.Value}\n{discriminator}")}");
-            _edges[id.Value] = new(
+            _edges.TryAdd(id.Value, new(
                 id,
                 source,
                 target,
@@ -349,10 +325,51 @@ public sealed partial class CSharpCodeGraphPlugin
                     evidenceKind,
                     plugin.Id.Value,
                     plugin.Version,
-                    location));
+                    location),
+                properties));
         }
 
-        private void Count(string relationshipKind, bool unresolved)
+        private void CountEmitted(string relationshipKind, CodeNodeId targetId)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.EdgesEmitted++;
+            if (_nodes.ContainsKey(targetId.Value))
+                counters.InternalTargets++;
+            else
+                counters.CrossProjectTargets++;
+        }
+
+        private void CountUnresolved(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.UnresolvedTargets++;
+        }
+
+        private void CountAmbiguous(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.AmbiguousTargets++;
+            counters.UnresolvedTargets++;
+        }
+
+        private void CountExternal(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.ExternalTargets++;
+        }
+
+        private void CountUnsupported(string relationshipKind)
+        {
+            var counters = GetCounters(relationshipKind);
+            counters.Candidates++;
+            counters.UnsupportedTargets++;
+        }
+
+        private RelationshipCounters GetCounters(string relationshipKind)
         {
             if (!_counters.TryGetValue(
                     relationshipKind,
@@ -362,10 +379,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 _counters[relationshipKind] = counters;
             }
 
-            if (unresolved)
-                counters.UnresolvedTargets++;
-            else
-                counters.EdgesEmitted++;
+            return counters;
         }
 
         private enum TargetMatch
@@ -409,22 +423,34 @@ public sealed partial class CSharpCodeGraphPlugin
             ISymbol target,
             CodeLocation location)
         {
-            var match = TryResolveTarget(target, out var targetId);
+            if (!TryResolveEmissionTarget(target, kind.Value, out var targetId))
+                return;
+
+            AddEdge(kind, sourceId, targetId, location);
+            CountEmitted(kind.Value, targetId);
+        }
+
+        /// <summary>
+        /// Resolves an emission target, counting external and ambiguous
+        /// outcomes so coverage stays honest. Returns false when no edge
+        /// may be emitted.
+        /// </summary>
+        private bool TryResolveEmissionTarget(
+            ISymbol target,
+            string relationshipKind,
+            out CodeNodeId targetId)
+        {
+            var match = TryResolveTarget(Normalize(target), out targetId);
             switch (match)
             {
                 case TargetMatch.Found:
-                    AddEdge(kind, sourceId, targetId, location);
-                    Count(kind.Value, unresolved: false);
-                    break;
+                    return true;
                 case TargetMatch.Ambiguous:
-                    // Multiple indexed declarations could be the target; never
-                    // guess between them.
-                    Count(kind.Value, unresolved: true);
-                    break;
-                case TargetMatch.External:
-                    // Externally-owned symbols (base library, packages) are
-                    // neither emitted nor counted as unresolved.
-                    break;
+                    CountAmbiguous(relationshipKind);
+                    return false;
+                default:
+                    CountExternal(relationshipKind);
+                    return false;
             }
         }
 
@@ -434,6 +460,8 @@ public sealed partial class CSharpCodeGraphPlugin
             {
                 switch (ancestor)
                 {
+                    case LocalFunctionStatementSyntax localFunction:
+                        return model.GetDeclaredSymbol(localFunction);
                     case BaseMethodDeclarationSyntax method:
                         return model.GetDeclaredSymbol(method);
                     case PropertyDeclarationSyntax property:
@@ -458,6 +486,39 @@ public sealed partial class CSharpCodeGraphPlugin
             return match == TargetMatch.Found ? nodeId : null;
         }
 
+        private void HandleBaseTypes(
+            string path,
+            TypeDeclarationSyntax declaration,
+            SemanticModel model)
+        {
+            if (declaration.BaseList is null ||
+                model.GetDeclaredSymbol(declaration) is not INamedTypeSymbol sourceType)
+            {
+                return;
+            }
+
+            var sourceNode = SourceNodeFor(sourceType);
+            if (sourceNode is null)
+                return;
+
+            foreach (var baseType in declaration.BaseList.Types)
+            {
+                if (model.GetTypeInfo(baseType.Type).Type is not INamedTypeSymbol targetType)
+                    continue;
+
+                var kind = sourceType.TypeKind == TypeKind.Interface
+                    ? CodeEdgeKinds.Inherits
+                    : targetType.TypeKind == TypeKind.Interface
+                        ? CodeEdgeKinds.Implements
+                        : CodeEdgeKinds.Inherits;
+                TryAddRelationshipEdge(
+                    kind,
+                    sourceNode,
+                    Normalize(targetType),
+                    Location(path, baseType));
+            }
+        }
+
         private void HandleInvocation(
             string path,
             InvocationExpressionSyntax invocation,
@@ -469,17 +530,18 @@ public sealed partial class CSharpCodeGraphPlugin
                 info.CandidateSymbols.Length == 0)
             {
                 if (SourceNodeFor(EnclosingCallable(invocation, model)) is not null)
-                    Count(CodeEdgeKinds.Calls.Value, unresolved: true);
+                    CountUnresolved(CodeEdgeKinds.Calls.Value);
                 return;
             }
 
             if (info.Symbol is not IMethodSymbol method)
                 return;
 
-            var targetNode =
-                SourceNodeFor(Normalize(method.ReducedFrom ?? method));
-            if (targetNode is null)
-                return; // external or ambiguous callee
+            if (!TryResolveEmissionTarget(
+                    method.ReducedFrom ?? method,
+                    CodeEdgeKinds.Calls.Value,
+                    out var targetNode))
+                return; // external or ambiguous callee, already counted
 
             var sourceNode =
                 SourceNodeFor(EnclosingCallable(invocation, model));
@@ -491,7 +553,7 @@ public sealed partial class CSharpCodeGraphPlugin
                 sourceNode,
                 targetNode,
                 Location(path, invocation));
-            Count(CodeEdgeKinds.Calls.Value, unresolved: false);
+            CountEmitted(CodeEdgeKinds.Calls.Value, targetNode);
         }
 
         private void HandleCreation(
@@ -502,71 +564,160 @@ public sealed partial class CSharpCodeGraphPlugin
             var info = model.GetSymbolInfo(creation);
             if (info.Symbol is IMethodSymbol constructor)
             {
-                var constructorTarget =
-                    SourceNodeFor(Normalize(constructor));
                 var sourceNode =
                     SourceNodeFor(EnclosingCallable(creation, model));
-                if (constructorTarget is not null && sourceNode is not null)
-                {
-                    AddEdge(
-                        CodeEdgeKinds.Calls,
-                        sourceNode,
-                        constructorTarget,
-                        Location(path, creation));
-                    Count(CodeEdgeKinds.Calls.Value, unresolved: false);
-                }
+                if (sourceNode is null)
+                    return;
+                if (!TryResolveEmissionTarget(
+                        constructor,
+                        CodeEdgeKinds.Calls.Value,
+                        out var constructorTarget))
+                    return; // external or ambiguous callee, already counted
+                AddEdge(
+                    CodeEdgeKinds.Calls,
+                    sourceNode,
+                    constructorTarget,
+                    Location(path, creation));
+                CountEmitted(CodeEdgeKinds.Calls.Value, constructorTarget);
             }
-            else
+            else if (info.Symbol is null && info.CandidateSymbols.Length == 0 &&
+                     SourceNodeFor(EnclosingCallable(creation, model)) is not null)
             {
-                var createdType = model.GetTypeInfo(creation).Type as INamedTypeSymbol;
-                if (createdType is not null)
-                    EmitTypeReference(path, createdType, creation.GetLocation(), model, creation);
-                else if (info.Symbol is null && info.CandidateSymbols.Length == 0 &&
-                         SourceNodeFor(EnclosingCallable(creation, model)) is not null)
-                {
-                    Count(CodeEdgeKinds.References.Value, unresolved: true);
-                }
+                CountUnresolved(CodeEdgeKinds.Calls.Value);
             }
         }
 
-        private void HandleTypeUsage(
+        private void HandleImplicitCreation(
             string path,
-            TypeSyntax typeSyntax,
-            SemanticModel model,
-            Location location)
-        {
-            var info = model.GetSymbolInfo(typeSyntax);
-            if (info.Symbol is INamedTypeSymbol namedType)
-            {
-                EmitTypeReference(path, namedType, location, model, typeSyntax);
-                return;
-            }
+            ImplicitObjectCreationExpressionSyntax creation,
+            SemanticModel model) =>
+            HandleConstructorCall(path, creation, model);
 
-            if (info.Symbol is null &&
-                info.CandidateSymbols.Length == 0 &&
-                SourceNodeFor(EnclosingCallable(typeSyntax, model)) is not null)
-            {
-                Count(CodeEdgeKinds.References.Value, unresolved: true);
-            }
-        }
-
-        private void EmitTypeReference(
+        private void HandleConstructorInitializer(
             string path,
-            INamedTypeSymbol namedType,
-            Location location,
-            SemanticModel model,
-            SyntaxNode node)
+            ConstructorInitializerSyntax initializer,
+            SemanticModel model) =>
+            HandleConstructorCall(path, initializer, model);
+
+        private void HandleConstructorCall(
+            string path,
+            SyntaxNode syntax,
+            SemanticModel model)
         {
-            var sourceNode =
-                SourceNodeFor(EnclosingCallable(node, model));
+            var info = model.GetSymbolInfo(syntax);
+            var sourceNode = SourceNodeFor(EnclosingCallable(syntax, model));
             if (sourceNode is null)
                 return;
 
-            TryAddRelationshipEdge(
-                CodeEdgeKinds.References,
-                sourceNode,
-                Normalize(namedType),
-                Location(path, node));
+            if (info.Symbol is IMethodSymbol constructor)
+            {
+                if (!TryResolveEmissionTarget(
+                        constructor,
+                        CodeEdgeKinds.Calls.Value,
+                        out var targetNode))
+                    return; // external or ambiguous callee, already counted
+
+                AddEdge(
+                    CodeEdgeKinds.Calls,
+                    sourceNode,
+                    targetNode,
+                    Location(path, syntax));
+                CountEmitted(CodeEdgeKinds.Calls.Value, targetNode);
+            }
+            else if (info.Symbol is null && info.CandidateSymbols.Length == 0)
+            {
+                CountUnresolved(CodeEdgeKinds.Calls.Value);
+            }
+        }
+
+        private void HandleReference(
+            string path,
+            SyntaxNode syntax,
+            SemanticModel model)
+        {
+            var info = model.GetSymbolInfo(syntax);
+            if (syntax is IdentifierNameSyntax { Identifier.ValueText: "var" } &&
+                info.Symbol is null)
+            {
+                // `var` without a resolved symbol is deliberately omitted:
+                // there is no target to attribute.
+                CountUnsupported(CodeEdgeKinds.References.Value);
+                return;
+            }
+
+            var sourceNode = SourceNodeFor(EnclosingReferenceOwner(syntax, model)) ??
+                (_fileNodes.TryGetValue(path, out var fileNode) ? fileNode : null);
+            if (sourceNode is null)
+                return;
+
+            var symbol = info.Symbol is IAliasSymbol alias
+                ? alias.Target
+                : info.Symbol;
+            if (symbol is not null && symbol is not INamespaceSymbol)
+            {
+                TryAddRelationshipEdge(
+                    CodeEdgeKinds.References,
+                    sourceNode,
+                    Normalize(symbol),
+                    Location(path, syntax));
+            }
+            else if (symbol is null && info.CandidateSymbols.Length == 0)
+            {
+                CountUnresolved(CodeEdgeKinds.References.Value);
+            }
+        }
+
+        private void HandleAttributeReference(
+            string path,
+            AttributeSyntax attribute,
+            SemanticModel model)
+        {
+            var sourceNode = SourceNodeFor(EnclosingReferenceOwner(attribute, model)) ??
+                (_fileNodes.TryGetValue(path, out var fileNode) ? fileNode : null);
+            if (sourceNode is null)
+                return;
+
+            var info = model.GetSymbolInfo(attribute);
+            if (info.Symbol is IMethodSymbol constructor)
+            {
+                TryAddRelationshipEdge(
+                    CodeEdgeKinds.References,
+                    sourceNode,
+                    Normalize(constructor.ContainingType),
+                    Location(path, attribute));
+            }
+            else if (info.Symbol is null && info.CandidateSymbols.Length == 0)
+            {
+                CountUnresolved(CodeEdgeKinds.References.Value);
+            }
+        }
+
+        private static ISymbol? EnclosingReferenceOwner(
+            SyntaxNode node,
+            SemanticModel model)
+        {
+            foreach (var ancestor in node.Ancestors())
+            {
+                switch (ancestor)
+                {
+                    case LocalFunctionStatementSyntax localFunction:
+                        return model.GetDeclaredSymbol(localFunction);
+                    case BaseMethodDeclarationSyntax method:
+                        return model.GetDeclaredSymbol(method);
+                    case BasePropertyDeclarationSyntax property:
+                        return model.GetDeclaredSymbol(property);
+                    case FieldDeclarationSyntax field when
+                        field.Declaration.Variables.FirstOrDefault() is { } variable:
+                        return model.GetDeclaredSymbol(variable);
+                    case VariableDeclaratorSyntax variable when
+                        variable.Parent?.Parent is FieldDeclarationSyntax:
+                        return model.GetDeclaredSymbol(variable);
+                    case BaseTypeDeclarationSyntax type:
+                        return model.GetDeclaredSymbol(type);
+                }
+            }
+
+            return null;
         }
 
         private void HandleUsingDirective(
@@ -574,25 +725,64 @@ public sealed partial class CSharpCodeGraphPlugin
             UsingDirectiveSyntax usingDirective,
             SemanticModel model)
         {
-            if (usingDirective.Alias is not null ||
-                usingDirective.StaticKeyword != default ||
-                usingDirective.Name is null)
+            if (usingDirective.Name is null)
+                return;
+
+            var info = model.GetSymbolInfo(usingDirective.Name);
+            var target = info.Symbol is IAliasSymbol alias
+                ? alias.Target
+                : info.Symbol;
+            if (target is not INamespaceSymbol and not INamedTypeSymbol)
             {
+                // Aliases to non-namespace/non-type members are deliberately
+                // omitted: imports model namespace/type scopes only.
+                CountUnsupported(CodeEdgeKinds.Imports.Value);
                 return;
             }
 
-            var info = model.GetSymbolInfo(usingDirective.Name);
-            if (info.Symbol is not INamespaceSymbol namespaceSymbol)
+            var isGlobal = usingDirective.GlobalKeyword != default;
+            var containingNamespace = usingDirective.Ancestors()
+                .OfType<BaseNamespaceDeclarationSyntax>()
+                .FirstOrDefault();
+            var scope = isGlobal
+                ? "project"
+                : containingNamespace is null ? "file" : "namespace";
+            CodeNodeId? sourceNode = isGlobal
+                ? ProjectNodeId(project.Path)
+                : containingNamespace is not null
+                    ? SourceNodeFor(model.GetDeclaredSymbol(containingNamespace))
+                    : _fileNodes.TryGetValue(path, out var fileNode) ? fileNode : null;
+            if (sourceNode is null)
                 return;
 
-            if (!_fileNodes.TryGetValue(path, out var fileNode))
-                return;
-
-            TryAddRelationshipEdge(
-                CodeEdgeKinds.Imports,
-                fileNode,
-                namespaceSymbol,
-                new CodeLocation(path, 1, 1, 1, 1));
+            var match = TryResolveTarget(Normalize(target), out var targetNode);
+            if (match == TargetMatch.Found)
+            {
+                var aliasName = usingDirective.Alias?.Name.Identifier.ValueText ?? string.Empty;
+                var isStatic = usingDirective.StaticKeyword != default;
+                AddEdge(
+                    CodeEdgeKinds.Imports,
+                    sourceNode,
+                    targetNode,
+                    Location(path, usingDirective),
+                    discriminator: $"{scope}:{aliasName}:{isStatic}:{isGlobal}",
+                    properties: new Dictionary<string, CodePropertyValue>
+                    {
+                        [CodePropertyKeys.ImportAlias] = new CodeTextProperty(aliasName),
+                        [CodePropertyKeys.ImportStatic] = new CodeBooleanProperty(isStatic),
+                        [CodePropertyKeys.ImportGlobal] = new CodeBooleanProperty(isGlobal),
+                        [CodePropertyKeys.ImportScope] = new CodeTextProperty(scope)
+                    });
+                CountEmitted(CodeEdgeKinds.Imports.Value, targetNode);
+            }
+            else if (match == TargetMatch.Ambiguous)
+            {
+                CountAmbiguous(CodeEdgeKinds.Imports.Value);
+            }
+            else
+            {
+                CountExternal(CodeEdgeKinds.Imports.Value);
+            }
         }
 
         private static async ValueTask WriteChunksAsync<T>(

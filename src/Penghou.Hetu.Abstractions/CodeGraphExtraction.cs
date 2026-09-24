@@ -134,7 +134,18 @@ public enum CodeRelationshipCoverageState
 {
     Produced = 0,
     Partial = 1,
-    NotProduced = 2
+    NotProduced = 2,
+    /// <summary>
+    /// The plugin could not determine coverage (for example an index unit
+    /// with no compilable sources). Unlike <see cref="NotProduced"/>, which
+    /// records a deliberate omission, this state must never be read as an
+    /// empty result.
+    /// </summary>
+    Unavailable = 3,
+    /// <summary>
+    /// The relationship kind does not apply to this plugin or index unit.
+    /// </summary>
+    NotApplicable = 4
 }
 
 /// <summary>
@@ -143,45 +154,114 @@ public enum CodeRelationshipCoverageState
 /// produce that kind" and from "produced but some targets did not resolve".
 /// </summary>
 /// <param name="RelationshipKind">The normalized edge kind being reported.</param>
-/// <param name="State">Produced, partial, or not-produced.</param>
+/// <param name="State">Produced, partial, not-produced, unavailable, or not-applicable.</param>
 /// <param name="EdgesEmitted">Edges successfully created for this kind.</param>
 /// <param name="UnresolvedTargets">
 /// Emission attempts whose target existed but could not be uniquely matched to
 /// a graph node. Externally-owned targets (for example base library symbols)
 /// are neither emitted nor counted here.
 /// </param>
+/// <param name="Candidates">Relationship sites examined for this kind.</param>
+/// <param name="InternalTargets">Targets resolved within the same index unit.</param>
+/// <param name="CrossProjectTargets">Targets resolved to another in-repo index unit.</param>
+/// <param name="ExternalTargets">Externally-owned targets, never emitted or guessed.</param>
+/// <param name="AmbiguousTargets">Targets with multiple indexed candidates, never guessed.</param>
+/// <param name="UnsupportedTargets">Sites deliberately omitted as unsupported.</param>
 public sealed record CodeRelationshipCoverage
 {
     public CodeRelationshipCoverage(
         string relationshipKind,
         CodeRelationshipCoverageState state,
         int edgesEmitted,
-        int unresolvedTargets)
+        int unresolvedTargets,
+        int candidates = 0,
+        int internalTargets = 0,
+        int crossProjectTargets = 0,
+        int externalTargets = 0,
+        int ambiguousTargets = 0,
+        int unsupportedTargets = 0)
     {
         RelationshipKind = ContractValue.Identifier(
             relationshipKind,
             nameof(relationshipKind));
         if (!Enum.IsDefined(state))
             throw new ArgumentOutOfRangeException(nameof(state));
-        if (edgesEmitted < 0 || unresolvedTargets < 0)
+        if (edgesEmitted < 0 || unresolvedTargets < 0 || candidates < 0 ||
+            internalTargets < 0 || crossProjectTargets < 0 || externalTargets < 0 ||
+            ambiguousTargets < 0 || unsupportedTargets < 0)
             throw new ArgumentOutOfRangeException(nameof(edgesEmitted));
-        if (state == CodeRelationshipCoverageState.NotProduced &&
-            (edgesEmitted != 0 || unresolvedTargets != 0))
+        if (state is CodeRelationshipCoverageState.NotProduced or
+                CodeRelationshipCoverageState.Unavailable or
+                CodeRelationshipCoverageState.NotApplicable &&
+            (edgesEmitted != 0 || unresolvedTargets != 0 || candidates != 0 ||
+             internalTargets != 0 || crossProjectTargets != 0 || externalTargets != 0 ||
+             ambiguousTargets != 0 || unsupportedTargets != 0))
         {
             throw new ArgumentException(
-                "A not-produced relationship kind cannot report edges or unresolved targets.",
+                "A not-produced, unavailable, or not-applicable relationship kind cannot report counts.",
                 nameof(state));
+        }
+        if (edgesEmitted != internalTargets + crossProjectTargets)
+        {
+            throw new ArgumentException(
+                "Emitted edges must equal internal plus cross-project targets.",
+                nameof(edgesEmitted));
         }
 
         State = state;
         EdgesEmitted = edgesEmitted;
         UnresolvedTargets = unresolvedTargets;
+        Candidates = candidates;
+        InternalTargets = internalTargets;
+        CrossProjectTargets = crossProjectTargets;
+        ExternalTargets = externalTargets;
+        AmbiguousTargets = ambiguousTargets;
+        UnsupportedTargets = unsupportedTargets;
     }
 
     public string RelationshipKind { get; }
     public CodeRelationshipCoverageState State { get; }
     public int EdgesEmitted { get; }
     public int UnresolvedTargets { get; }
+    public int Candidates { get; }
+    public int InternalTargets { get; }
+    public int CrossProjectTargets { get; }
+    public int ExternalTargets { get; }
+    public int AmbiguousTargets { get; }
+    public int UnsupportedTargets { get; }
+}
+
+/// <summary>
+/// Per-index-unit relationship coverage. Run-wide
+/// <see cref="CodeGraphExtractionResult.RelationshipCoverage"/> answers "what
+/// did this extraction produce"; these entries answer "why is this category
+/// empty or partial for one project unit".
+/// </summary>
+/// <param name="IndexUnitId">The plugin-owned unit this entry describes.</param>
+/// <param name="Coverage">One entry per relationship kind, as run-wide.</param>
+public sealed record CodeIndexUnitCoverage
+{
+    public CodeIndexUnitCoverage(
+        CodeIndexUnitId indexUnitId,
+        IReadOnlyCollection<CodeRelationshipCoverage>? coverage = null)
+    {
+        IndexUnitId = indexUnitId ??
+            throw new ArgumentNullException(nameof(indexUnitId));
+        Coverage = coverage?
+            .Select(value => value ?? throw new ArgumentException(
+                "Index-unit coverage cannot contain null entries.",
+                nameof(coverage)))
+            .GroupBy(value => value.RelationshipKind, StringComparer.Ordinal)
+            .Select(group => group.Single())
+            .Order(Comparer<CodeRelationshipCoverage>.Create(
+                (left, right) => string.CompareOrdinal(
+                    left.RelationshipKind,
+                    right.RelationshipKind)))
+            .ToArray() ?? [];
+    }
+
+    public CodeIndexUnitId IndexUnitId { get; }
+    public IReadOnlyCollection<CodeRelationshipCoverage> Coverage { get; }
 }
 
 /// <summary>Reports cleanup work and bounded privacy-safe extraction diagnostics.</summary>
@@ -193,7 +273,8 @@ public sealed record CodeGraphExtractionResult
         int sourcesContributingFacts = 0,
         int unresolvedRelationships = 0,
         IReadOnlyCollection<string>? warningCodes = null,
-        IReadOnlyCollection<CodeRelationshipCoverage>? relationshipCoverage = null)
+        IReadOnlyCollection<CodeRelationshipCoverage>? relationshipCoverage = null,
+        IReadOnlyCollection<CodeIndexUnitCoverage>? indexUnitCoverage = null)
     {
         if (obsoleteIndexUnits?.Any(id => id is null) == true)
             throw new ArgumentException("Obsolete units cannot contain null identities.", nameof(obsoleteIndexUnits));
@@ -235,6 +316,18 @@ public sealed record CodeGraphExtractionResult
                     left.RelationshipKind,
                     right.RelationshipKind)))
             .ToArray() ?? [];
+        IndexUnitCoverage = indexUnitCoverage?
+            .Select(value => value ?? throw new ArgumentException(
+                "Index-unit coverage cannot contain null entries.",
+                nameof(indexUnitCoverage)))
+            .GroupBy(value => value.IndexUnitId.Value, StringComparer.Ordinal)
+            .Select(group => group.Single())
+            .OrderBy(value => value.IndexUnitId.Value, StringComparer.Ordinal)
+            .ToArray() ?? [];
+        if (IndexUnitCoverage.Count > 100_000)
+            throw new ArgumentException(
+                "Extraction results cannot report more than 100,000 index-unit coverage entries.",
+                nameof(indexUnitCoverage));
     }
 
     public IReadOnlyCollection<CodeIndexUnitId> ObsoleteIndexUnits { get; }
@@ -248,6 +341,12 @@ public sealed record CodeGraphExtractionResult
     /// produce appears exactly once, including kinds deliberately not produced.
     /// </summary>
     public IReadOnlyCollection<CodeRelationshipCoverage> RelationshipCoverage { get; }
+
+    /// <summary>
+    /// Per-index-unit coverage breakdown, ordered by unit id. Empty when the
+    /// plugin reports run-wide coverage only.
+    /// </summary>
+    public IReadOnlyCollection<CodeIndexUnitCoverage> IndexUnitCoverage { get; }
 }
 
 /// <summary>Discovers normalized graph facts for one language.</summary>

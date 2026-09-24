@@ -15,8 +15,11 @@ public static class CodePropertyKeys
     public const string Attributes = "attributes";
     public const string Obsolete = "obsolete";
     public const string TestMethod = "test-method";
+    public const string HttpEndpoint = "http-endpoint";
+    public const string RouteTemplate = "route-template";
     public const string ConstantValue = "constant-value";
     public const string DocSummary = "doc-summary";
+    public const string DocRemarks = "doc-remarks";
     public const string AssemblyName = "assembly-name";
     public const string TargetFramework = "target-framework";
     public const string Nullable = "nullable";
@@ -25,4 +28,8 @@ public static class CodePropertyKeys
     public const string ContentHash = "content-hash";
     public const string PackageVersion = "package-version";
     public const string PackageCondition = "package-condition";
+    public const string ImportAlias = "import-alias";
+    public const string ImportStatic = "import-static";
+    public const string ImportGlobal = "import-global";
+    public const string ImportScope = "import-scope";
 }
