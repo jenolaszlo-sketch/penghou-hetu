@@ -87,7 +87,7 @@ already completed work.
 
 ## Marang Gate 0.5 / Batch 4 handoff
 
-The current `0.2.0-preview.4` baseline is usable as a bounded, provider-neutral
+The current `0.2.0-preview.5` baseline is usable as a bounded, provider-neutral
 graph source for Marang. This is an integration boundary and audit record; it
 does not make Marang workflow semantics part of Hetu.
 
@@ -284,45 +284,61 @@ version must not silently resolve to an unrelated working-tree checkout.
 
 ## Milestone 7.5 — useful semantic relationships
 
-Implementation is tracked in
-[docs/milestone-7.5-execution-plan.md](docs/milestone-7.5-execution-plan.md).
+Status: **complete in `0.2.0-preview.5`**. Implementation was tracked in
+[docs/milestone-7.5-execution-plan.md](docs/milestone-7.5-execution-plan.md);
+all five phases landed with regression coverage.
 
-The query surface exists, but the C# plugin must emit the relationships that
-make comprehension and impact analysis useful.
+The query surface exists, and the C# plugin now emits the relationships that
+make comprehension and impact analysis useful, using uniquely resolved Roslyn
+symbols:
 
-Implement, using uniquely resolved Roslyn symbols:
-
-- inheritance and interface implementation;
-- semantic calls and references;
-- import relationships;
-- return and accepted-parameter relationships where the cross-language meaning
-  is sufficiently precise;
-- stable diagnostics for unresolved, ambiguous, unsupported, or deliberately
-  omitted relationships.
+- inheritance and interface implementation, classified without transitive
+  closure (`Inherits` for interface extension and class extension,
+  `Implements` for class/struct interface adoption);
+- semantic calls (ordinary, static, extension, generic, interface-dispatched,
+  constructors, implicit creation, `this(...)`/`base(...)`) and references
+  with smallest-owner attribution, local-function owners, and attribute
+  targets;
+- import relationships preserving alias, `static`, `global`, and
+  file/namespace/project scope metadata;
+- return and accepted-parameter relationships remain deliberately
+  `NotProduced`: the cross-language meaning is not precise enough to publish
+  without guessing;
+- stable diagnostics for unresolved, ambiguous, external, unsupported, and
+  deliberately omitted targets — externals are counted, never emitted.
 
 Do not guess targets. Syntax-only observations must not be labeled semantic.
 Full MSBuild evaluation remains an optional future provider concern rather than
 a requirement of the lightweight C# plugin.
 
-Add index-coverage metadata so a consumer can distinguish “no relationships
-exist” from “this plugin/index did not produce that relationship kind.”
+Index-coverage metadata lets a consumer distinguish “no relationships exist”
+(`Produced`, zero edges) from “deliberately not produced” (`NotProduced`),
+“could not be determined” (`Unavailable`), and “partially resolved”
+(`Partial`). Run-wide entries carry candidate/internal/cross-project/external/
+ambiguous/unsupported breakdowns, and every project index unit reports its own
+per-kind entries.
 
-Tier-A feature candidates below intentionally ride along with this extraction
+Tier-A feature candidates below intentionally rode along with this extraction
 pass: they decorate symbols the plugin already emits.
 
 Exit criteria:
 
 - cross-file and cross-project callers, callees, references, inheritance, and
-  implementations are queryable;
+  implementations are queryable — done, with internal/cross-project split;
 - partial types, overloads, generics, extension methods, and interface dispatch
-  have explicit regression coverage;
-- unresolved or ambiguous targets never create guessed edges;
-- repeat and incremental extraction remain deterministic;
-- coverage/capability metadata accurately describes the published index;
+  have explicit regression coverage — done;
+- unresolved or ambiguous targets never create guessed edges — done, with
+  `AmbiguousTargets`/`ExternalTargets` counts to prove it;
+- repeat and incremental extraction remain deterministic — done, including
+  coverage determinism and stale-relationship removal on rebind;
+- coverage/capability metadata accurately describes the published index —
+  done (Phase 4 contract with per-unit entries);
 - the store conformance suite gains relationship-kind checks alongside plugin
-  tests;
+  tests — done (`traversal-semantic-kind-filter` on both providers);
 - indexing a repository of Roslyn-solution size completes within the configured
-  per-source and total byte budgets.
+  per-source and total byte budgets — partially open: bounded chunked batch
+  delivery is proven, but no extraction-throughput benchmark baseline exists
+  yet (store-operation baselines are recorded in `BENCHMARKS.md`).
 
 ## Feature candidates
 
@@ -331,23 +347,28 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
 
 ### Tier A — ride along with Milestone 7.5
 
-- **Documentation-comment extraction (S)** — attach `<summary>`/`remarks`
-  text to symbol nodes as bounded syntax-evidence properties; declaration plus
-  its documented intent in one node. Normalize deterministically and cap both
-  per-symbol text and total extracted documentation.
-- **Modifier/attribute properties (S)** — `static/virtual/abstract/sealed`,
-  access level, and an explicit allowlist such as `[Obsolete]`, test-framework,
-  and route attributes; unlocks public-surface, obsolete-member, and
-  test-filtering queries without turning arbitrary attribute payloads into an
-  unbounded property channel.
-- **Literal values for enums/constants (S)** — lets consumers answer
-  configuration questions without reading source.
-- **Package-reference nodes (M)** — `PackageReference` items become bounded
+- **Documentation-comment extraction (S, landed in `0.2.0-preview.5`)** —
+  `<summary>` and `<remarks>` text on symbol nodes as bounded properties
+  (`doc-summary`, `doc-remarks`, 512 chars each).
+- **Modifier/attribute properties (S, landed in `0.2.0-preview.5`)** —
+  `static/virtual/abstract/sealed`, access level, `[Obsolete]`, exact
+  test-framework allowlist (`test-method`), and exact ASP.NET Core
+  route/verb allowlist (`http-endpoint` plus bounded `route-template`).
+  Unlocks public-surface, obsolete-member, test-filtering, and endpoint
+  queries without turning arbitrary attribute payloads into an unbounded
+  property channel.
+- **Literal values for enums/constants (S, landed)** — constant field values
+  as bounded `constant-value` properties.
+- **Package-reference nodes (M, landed)** — `PackageReference` items become bounded
   syntax-evidence external dependency nodes with version and unexpanded
   condition metadata; do not claim evaluated MSBuild semantics.
-- **Solution-file scoping (M)** — parse `.sln` and `.slnx` for canonical project sets,
-  configurations, and explicit solution dependencies instead of directory-walk
-  inference. Project-reference edges remain the primary build-order evidence.
+- **Solution-file scoping (M, landed in `0.2.0-preview.5`)** — `.sln` and
+  `.slnx` define the canonical project set instead of directory-walk
+  inference. Configurations, solution folders, and nested-project sections
+  are not evaluated; their presence is reported as
+  `csharp.solution.has-configurations`, `has-solution-folders`, and
+  `has-nested-projects` diagnostics. Project-reference edges remain the
+  primary build-order evidence.
 
 ### Tier B — query surface
 
@@ -381,7 +402,7 @@ semantic-relationship milestone.
 
 ## Milestone 8 — dogfood with Solo
 
-This milestone begins once Milestone 7.5 satisfies its exit criteria. It will
+Milestone 7.5 is complete, so this milestone is unblocked. It will
 be designed and implemented together with Solo rather than completed
 speculatively.
 

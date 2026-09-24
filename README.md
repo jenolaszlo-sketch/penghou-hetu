@@ -35,7 +35,7 @@ ANTLR parsers, hand-written parsers, or other deterministic extraction tools.
 
 ## Status
 
-Hetu 0.2.0-preview.4 has a working preview runtime, C# extractor, durable
+Hetu 0.2.0-preview.5 has a working preview runtime, C# extractor, durable
 LatticeDb provider, and shared provider conformance suite. The API remains
 preview-quality and is built for .NET 10. See [ROADMAP.md](ROADMAP.md) for the remaining
 semantic milestones and first-release invariants.

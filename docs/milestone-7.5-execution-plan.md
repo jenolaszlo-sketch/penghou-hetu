@@ -1,5 +1,9 @@
 # Milestone 7.5 execution plan
 
+Status: **complete in `0.2.0-preview.5`** — all five phases landed with
+regression coverage. The one accepted gap is an extraction-throughput
+benchmark baseline (store-operation baselines live in `BENCHMARKS.md`).
+
 ## Outcome
 
 The C# plugin deterministically emits compiler-resolved `inherits`,
