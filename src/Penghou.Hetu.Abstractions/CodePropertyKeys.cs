@@ -25,4 +25,8 @@ public static class CodePropertyKeys
     public const string ContentHash = "content-hash";
     public const string PackageVersion = "package-version";
     public const string PackageCondition = "package-condition";
+    public const string ImportAlias = "import-alias";
+    public const string ImportStatic = "import-static";
+    public const string ImportGlobal = "import-global";
+    public const string ImportScope = "import-scope";
 }

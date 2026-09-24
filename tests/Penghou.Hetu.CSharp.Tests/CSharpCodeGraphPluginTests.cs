@@ -474,6 +474,270 @@ public sealed class CSharpCodeGraphPluginTests
     }
 
     [Fact]
+    public async Task ExtractAsync_ClassifiesExplicitInterfaceRelationshipsWithoutTransitiveEdges()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Contracts.cs", """
+                namespace Example;
+                public interface IParent { }
+                public interface IChild : IParent { }
+                """),
+            ("src/Service.cs", """
+                namespace Example;
+                public sealed class Service : IChild { }
+                """));
+
+        var parent = extracted.Nodes.Single(node => node.QualifiedName == "Example.IParent");
+        var child = extracted.Nodes.Single(node => node.QualifiedName == "Example.IChild");
+        var service = extracted.Nodes.Single(node => node.QualifiedName == "Example.Service");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Inherits &&
+            edge.SourceId == child.Id &&
+            edge.TargetId == parent.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements && edge.SourceId == child.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Implements &&
+            edge.SourceId == service.Id &&
+            edge.TargetId == child.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.SourceId == service.Id && edge.TargetId == parent.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_EmitsImplicitCreationAndConstructorInitializerCalls()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Constructors.cs", """
+                namespace Example;
+
+                public class Base
+                {
+                    public Base(int value) { }
+                }
+
+                public sealed class Derived : Base
+                {
+                    public Derived() : this(1) { }
+                    public Derived(int value) : base(value) { }
+                    public static Derived Create() => new();
+                }
+                """));
+
+        var constructors = extracted.Nodes
+            .Where(node => node.Kind == CodeNodeKinds.Callable && node.Name == "Derived")
+            .ToArray();
+        var parameterless = Assert.Single(constructors, node =>
+            node.QualifiedName!.EndsWith("Derived()", StringComparison.Ordinal));
+        var withValue = Assert.Single(constructors, node =>
+            node.QualifiedName!.EndsWith("Derived(int)", StringComparison.Ordinal));
+        var baseConstructor = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable &&
+            node.Name == "Base" &&
+            node.QualifiedName!.EndsWith("Base(int)", StringComparison.Ordinal));
+        var create = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Create");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == parameterless.Id && edge.TargetId == withValue.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == withValue.Id && edge.TargetId == baseConstructor.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == create.Id && edge.TargetId == parameterless.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ModelsLocalFunctionsAndUsesThemAsCallOwners()
+    {
+        var extracted = await ExtractAsync(
+            ("src/LocalFunctions.cs", """
+                namespace Example;
+
+                public static class Operations
+                {
+                    public static int Double(int value) => value * 2;
+
+                    public static int Run(int value)
+                    {
+                        int Transform(int item) => Double(item);
+                        return Transform(value);
+                    }
+                }
+                """));
+
+        var run = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var transform = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Transform");
+        var doubleMethod = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Double");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Contains &&
+            edge.SourceId == run.Id && edge.TargetId == transform.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id && edge.TargetId == transform.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == transform.Id && edge.TargetId == doubleMethod.Id);
+        Assert.DoesNotContain(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.Calls &&
+            edge.SourceId == run.Id && edge.TargetId == doubleMethod.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReferencesUseTheSmallestIndexedOwner()
+    {
+        var extracted = await ExtractAsync(
+            ("src/References.cs", """
+                using System;
+                using System.Collections.Generic;
+                namespace Example;
+
+                public sealed class MarkerAttribute : Attribute { }
+
+                public class Entity
+                {
+                    public int Id { get; init; }
+                }
+
+                public class Consumer
+                {
+                    private Entity _field = new();
+                    public Entity Current { get; set; } = new();
+
+                    [Marker]
+                    public Entity Select<T>(Entity item) where T : Entity
+                    {
+                        List<Entity> values = [item];
+                        var type = typeof(Entity);
+                        var name = nameof(Entity);
+                        return item.Id == 0 ? _field : values[0];
+                    }
+                }
+                """));
+
+        var entity = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Type && node.QualifiedName == "Example.Entity");
+        var marker = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Type &&
+            node.QualifiedName == "Example.MarkerAttribute");
+        var id = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Property && node.Name == "Id");
+        var field = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Field && node.Name == "_field");
+        var current = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Property && node.Name == "Current");
+        var select = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Select");
+
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == field.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == current.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == entity.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == marker.Id);
+        Assert.Contains(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == select.Id && edge.TargetId == id.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_RepeatedReferencesKeepFirstEvidenceAndVarIsNotUnresolved()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Repeated.cs", """
+                namespace Example;
+                public class Target { }
+                public class Consumer
+                {
+                    public void Run()
+                    {
+                        Target first = new();
+                        Target second = new();
+                        var inferred = first;
+                    }
+                }
+                """));
+
+        var target = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Target");
+        var run = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var reference = Assert.Single(extracted.Edges, edge =>
+            edge.Kind == CodeEdgeKinds.References &&
+            edge.SourceId == run.Id && edge.TargetId == target.Id);
+
+        Assert.Equal(7, reference.Evidence.Location!.StartLine);
+        var coverage = extracted.Result.RelationshipCoverage.Single(value =>
+            value.RelationshipKind == CodeEdgeKinds.References.Value);
+        Assert.Equal(0, coverage.UnresolvedTargets);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ImportsPreserveAliasFlagsAndSemanticScope()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Targets.cs", """
+                namespace Example.Targets
+                {
+                    public class Widget { }
+                    public static class Helpers { public static void Run() { } }
+                }
+                namespace Example.Shared { public class SharedValue { } }
+                """),
+            ("src/Imports.cs", """
+                global using Example.Shared;
+                global using WidgetAlias = Example.Targets.Widget;
+                global using static Example.Targets.Helpers;
+                using Example.Targets;
+
+                namespace ConsumerSpace
+                {
+                    using Example.Shared;
+                    public class Consumer { }
+                }
+                """));
+
+        var project = Assert.Single(extracted.Nodes, node => node.Kind == CodeNodeKinds.Project);
+        var file = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.File && node.QualifiedName == "src/Imports.cs");
+        var consumerNamespace = Assert.Single(extracted.Nodes, node =>
+            node.Kind == CodeNodeKinds.Namespace && node.QualifiedName == "ConsumerSpace");
+        var widget = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Targets.Widget");
+        var helpers = Assert.Single(extracted.Nodes, node => node.QualifiedName == "Example.Targets.Helpers");
+
+        var imports = extracted.Edges
+            .Where(edge => edge.Kind == CodeEdgeKinds.Imports)
+            .ToArray();
+        Assert.Contains(imports, edge =>
+            edge.SourceId == project.Id && edge.TargetId == widget.Id &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportAlias]).Value == "WidgetAlias" &&
+            ((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportGlobal]).Value);
+        Assert.Contains(imports, edge =>
+            edge.SourceId == project.Id && edge.TargetId == helpers.Id &&
+            ((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportStatic]).Value &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "project");
+        Assert.Contains(imports, edge =>
+            edge.SourceId == file.Id &&
+            !((CodeBooleanProperty)edge.Properties[CodePropertyKeys.ImportGlobal]).Value &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "file");
+        Assert.Contains(imports, edge =>
+            edge.SourceId == consumerNamespace.Id &&
+            ((CodeTextProperty)edge.Properties[CodePropertyKeys.ImportScope]).Value == "namespace");
+    }
+
+    [Fact]
     public async Task ExtractAsync_EmitsReferencesImportsAndCoverage()
     {
         var extracted = await ExtractAsync(

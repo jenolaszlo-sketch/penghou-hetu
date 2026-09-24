@@ -24,6 +24,7 @@ public sealed partial class CSharpCodeGraphPlugin
         BaseTypeDeclarationSyntax value => model.GetDeclaredSymbol(value, cancellationToken),
         DelegateDeclarationSyntax value => model.GetDeclaredSymbol(value, cancellationToken),
         BaseMethodDeclarationSyntax value => model.GetDeclaredSymbol(value, cancellationToken),
+        LocalFunctionStatementSyntax value => model.GetDeclaredSymbol(value, cancellationToken),
         BasePropertyDeclarationSyntax value => model.GetDeclaredSymbol(value, cancellationToken),
         VariableDeclaratorSyntax value when value.Parent?.Parent is FieldDeclarationSyntax =>
             model.GetDeclaredSymbol(value, cancellationToken),
@@ -34,7 +35,8 @@ public sealed partial class CSharpCodeGraphPlugin
 
     private static bool HasSupportedParameterOwner(ParameterSyntax parameter) =>
         parameter.Parent?.Parent is BaseMethodDeclarationSyntax or
-            DelegateDeclarationSyntax or BasePropertyDeclarationSyntax;
+            LocalFunctionStatementSyntax or DelegateDeclarationSyntax or
+            BasePropertyDeclarationSyntax;
 
     private static CodeNodeKind? GetNodeKind(ISymbol symbol) => symbol switch
     {
