@@ -276,7 +276,9 @@ public static class CodeGraphStoreConformanceSuite
                     Edge("ab", traversalNodes[0].Id, traversalNodes[1].Id, CodeEdgeKinds.Calls),
                     Edge("ac", traversalNodes[0].Id, traversalNodes[2].Id, CodeEdgeKinds.References),
                     Edge("bd", traversalNodes[1].Id, traversalNodes[3].Id, CodeEdgeKinds.Implements),
-                    Edge("ca", traversalNodes[2].Id, traversalNodes[0].Id, CodeEdgeKinds.DependsOn)
+                    Edge("ca", traversalNodes[2].Id, traversalNodes[0].Id, CodeEdgeKinds.DependsOn),
+                    Edge("ad", traversalNodes[0].Id, traversalNodes[3].Id, CodeEdgeKinds.Inherits),
+                    Edge("dc", traversalNodes[3].Id, traversalNodes[2].Id, CodeEdgeKinds.Imports)
                 ]),
             cancellationToken).ConfigureAwait(false);
         var completed = new CodeIndexRunManifest(
@@ -423,6 +425,37 @@ public static class CodeGraphStoreConformanceSuite
                 edge.Kind == CodeEdgeKinds.Calls || edge.Kind == CodeEdgeKinds.References),
             "multi-kind traversal must return exactly the requested kinds");
         checks.Add("traversal-relationship-kind-filter");
+        var inheritsOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[0].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.Inherits],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            inheritsOnly.Edges.Count == 1 &&
+            inheritsOnly.Edges[0].Id.Value == "edge:ad" &&
+            inheritsOnly.Edges[0].Kind == CodeEdgeKinds.Inherits,
+            "kind-filtered traversal must return only inherits edges");
+        var importsOnly = await store.TraverseAsync(
+            repositoryId,
+            new CodeGraphTraversalQuery(
+                traversalNodes[3].Id,
+                CodeGraphDirection.Outgoing,
+                [CodeEdgeKinds.Imports],
+                maxDepth: 5,
+                maxNodes: 10,
+                maxEdges: 10),
+            cancellationToken).ConfigureAwait(false);
+        Require(
+            importsOnly.Edges.Count == 1 &&
+            importsOnly.Edges[0].Id.Value == "edge:dc" &&
+            importsOnly.Edges[0].Kind == CodeEdgeKinds.Imports,
+            "kind-filtered traversal must return only imports edges");
+        checks.Add("traversal-semantic-kind-filter");
 
         Require(
             await store.GetNodeAsync(repositoryId, firstOnly.Id, cancellationToken)

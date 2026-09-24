@@ -136,9 +136,10 @@ public sealed partial class CSharpCodeGraphPlugin
         /// Second pass over the completed declaration set: resolves semantic
         /// relationships now that every node of the project exists. Targets
         /// resolve against this project first, then any project processed
-        /// earlier in dependency order; targets outside the indexed repository
-        /// are skipped silently, and genuinely unresolved targets are counted
-        /// per relationship kind instead of producing guessed edges.
+        /// earlier in dependency order; externally-owned targets are counted
+        /// as external rather than emitted or guessed, and genuinely
+        /// unresolved targets are counted per relationship kind instead of
+        /// producing guessed edges.
         /// </summary>
         public void AddRelationships(CancellationToken cancellationToken)
         {

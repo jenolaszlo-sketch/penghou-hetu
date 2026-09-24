@@ -81,6 +81,99 @@ public sealed class CSharpCodeGraphPluginTests
             JsonSerializer.Serialize(first.Declarations),
             JsonSerializer.Serialize(second.Declarations));
         Assert.Equal(JsonSerializer.Serialize(first.Edges), JsonSerializer.Serialize(second.Edges));
+        Assert.Equal(
+            JsonSerializer.Serialize(first.Result.RelationshipCoverage),
+            JsonSerializer.Serialize(second.Result.RelationshipCoverage));
+        Assert.Equal(
+            JsonSerializer.Serialize(first.Result.IndexUnitCoverage),
+            JsonSerializer.Serialize(second.Result.IndexUnitCoverage));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_RebindRemovesStaleCallRelationships()
+    {
+        var helper = ("src/Helper.cs", """
+            namespace Example;
+            public static class Helper
+            {
+                public static void A() { }
+                public static void B() { }
+            }
+            """);
+        var callerV1 = ("src/Caller.cs", """
+            namespace Example;
+            public class Caller
+            {
+                public void Run() => Helper.A();
+            }
+            """);
+        var callerV2 = ("src/Caller.cs", """
+            namespace Example;
+            public class Caller
+            {
+                public void Run() => Helper.B();
+            }
+            """);
+
+        var before = await ExtractAsync(helper, callerV1);
+        var runBefore = before.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var targetA = before.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "A");
+        Assert.Contains(
+            before.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runBefore.Id && edge.TargetId == targetA.Id);
+
+        // Only the caller file changes; the helper file is byte-identical.
+        // The rebind must not leave the old call behind.
+        var after = await ExtractAsync(helper, callerV2);
+        var runAfter = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Run");
+        var targetB = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "B");
+        var targetAAfter = after.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "A");
+        Assert.Contains(
+            after.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runAfter.Id && edge.TargetId == targetB.Id);
+        Assert.DoesNotContain(
+            after.Edges,
+            edge => edge.Kind == CodeEdgeKinds.Calls &&
+                edge.SourceId == runAfter.Id && edge.TargetId == targetAAfter.Id);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ChunksRelationshipBatchesWithinSinkLimits()
+    {
+        var files = Enumerable.Range(0, 12).Select(index => (
+            $"src/Worker{index}.cs",
+            "namespace Example;\n" +
+            $"public class Worker{index}\n" +
+            "{\n" +
+            "    public void Run() => Helper.Ping();\n" +
+            "}\n")).ToArray();
+        var helper = ("src/Helper.cs", """
+            namespace Example;
+            public static class Helper
+            {
+                public static void Ping() { }
+            }
+            """);
+
+        var extracted = await ExtractAsync(
+            new CodeGraphBatchLimits(maxNodes: 50, maxDeclarations: 50, maxEdges: 5),
+            [.. files, helper]);
+
+        var ping = extracted.Nodes.Single(node =>
+            node.Kind == CodeNodeKinds.Callable && node.Name == "Ping");
+        var callEdges = extracted.Edges
+            .Where(edge => edge.Kind == CodeEdgeKinds.Calls && edge.TargetId == ping.Id)
+            .ToArray();
+        Assert.Equal(12, callEdges.Length);
+        Assert.True(extracted.Batches.Count > 1, $"batches={extracted.Batches.Count}");
+        Assert.True(extracted.Batches[^1].CompletesIndexUnit);
     }
 
     [Fact]
@@ -409,7 +502,7 @@ public sealed class CSharpCodeGraphPluginTests
                     null)
             ]);
         var plugin = new CSharpCodeGraphPlugin();
-        var sink = new RecordingSink();
+        var sink = new RecordingSink(new CodeGraphBatchLimits());
 
         await using var session = await plugin.CreateSessionAsync(context);
         var result = await session.ExtractAsync(sink);
@@ -1643,7 +1736,12 @@ public sealed class CSharpCodeGraphPluginTests
         }
     }
 
+    private static Task<Extraction> ExtractAsync(
+        params (string Path, string Content)[] values) =>
+        ExtractAsync(new CodeGraphBatchLimits(), values);
+
     private static async Task<Extraction> ExtractAsync(
+        CodeGraphBatchLimits limits,
         params (string Path, string Content)[] values)
     {
         var sources = values.Select(value => new CodeGraphSource(
@@ -1657,7 +1755,7 @@ public sealed class CSharpCodeGraphPluginTests
             new CodeIndexRunId("run:test"),
             sources);
         var plugin = new CSharpCodeGraphPlugin();
-        var sink = new RecordingSink();
+        var sink = new RecordingSink(limits);
 
         await using var session = await plugin.CreateSessionAsync(context);
         var result = await session.ExtractAsync(sink);
@@ -1674,7 +1772,8 @@ public sealed class CSharpCodeGraphPluginTests
             sink.Batches.SelectMany(batch => batch.Declarations).OrderBy(value => value.Id.Value, StringComparer.Ordinal).ToArray(),
             sink.Batches.SelectMany(batch => batch.Edges).OrderBy(edge => edge.Id.Value, StringComparer.Ordinal).ToArray(),
             result,
-            sink.Batches.Select(batch => batch.Origin.IndexUnitId).Distinct().ToArray());
+            sink.Batches.Select(batch => batch.Origin.IndexUnitId).Distinct().ToArray(),
+            sink.Batches.ToArray());
     }
 
     private static string Hash(string content) =>
@@ -1684,9 +1783,9 @@ public sealed class CSharpCodeGraphPluginTests
     private static string CSharpProjectUnitId(string projectPath) =>
         $"csharp:project:{Hash(projectPath)}";
 
-    private sealed class RecordingSink : ICodeGraphSink
+    private sealed class RecordingSink(CodeGraphBatchLimits limits) : ICodeGraphSink
     {
-        public CodeGraphBatchLimits Limits { get; } = new();
+        public CodeGraphBatchLimits Limits { get; } = limits;
         public List<CodeGraphBatch> Batches { get; } = [];
 
         public ValueTask WriteBatchAsync(
@@ -1704,6 +1803,7 @@ public sealed class CSharpCodeGraphPluginTests
         IReadOnlyList<CodeGraphDeclaration> Declarations,
         IReadOnlyList<CodeGraphEdge> Edges,
         CodeGraphExtractionResult Result,
-        IReadOnlyList<CodeIndexUnitId> UnitIds);
+        IReadOnlyList<CodeIndexUnitId> UnitIds,
+        IReadOnlyList<CodeGraphBatch> Batches);
 }
 
