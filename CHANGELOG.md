@@ -6,6 +6,8 @@ releases may still revise public contracts.
 
 ## Unreleased
 
+## 0.2.0-preview.6
+
 - Test-to-production mapping: the C# plugin marks projects that reference an
   exact test-framework package allowlist with a `test-project` property, and
   derives one bounded `exercised-by` edge from each resolved production target
