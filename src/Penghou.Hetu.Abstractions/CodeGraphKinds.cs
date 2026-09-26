@@ -51,4 +51,5 @@ public static class CodeEdgeKinds
     public static readonly CodeEdgeKind DependsOn = new("depends-on");
     public static readonly CodeEdgeKind Returns = new("returns");
     public static readonly CodeEdgeKind Accepts = new("accepts");
+    public static readonly CodeEdgeKind ExercisedBy = new("exercised-by");
 }

@@ -1339,6 +1339,95 @@ public sealed class CSharpCodeGraphPluginTests
     }
 
     [Fact]
+    public async Task ExtractAsync_MarksTestProjectsFromExactPackageAllowlist()
+    {
+        var testProject = await ExtractAsync(
+            ("src/Tests/Tests.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <PackageReference Include="xunit" Version="2.9.3" />
+                    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/Tests/Placeholder.cs", "namespace Tests; public class Placeholder { }"));
+        var nonTestProject = await ExtractAsync(
+            ("src/App/App.csproj", """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+                  </ItemGroup>
+                </Project>
+                """),
+            ("src/App/Placeholder.cs", "namespace App; public class Placeholder { }"));
+
+        var project = Assert.Single(
+            testProject.Nodes,
+            node => node.Kind == CodeNodeKinds.Project);
+        Assert.True(
+            project.Properties.TryGetValue(CodePropertyKeys.TestProject, out var marker) &&
+            marker is CodeBooleanProperty { Value: true });
+
+        var plain = Assert.Single(
+            nonTestProject.Nodes,
+            node => node.Kind == CodeNodeKinds.Project);
+        Assert.False(plain.Properties.ContainsKey(CodePropertyKeys.TestProject));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_EmitsExercisedByEdgesFromAllowlistedTestMethods()
+    {
+        var extracted = await ExtractAsync(
+            ("src/Tests.cs", """
+                namespace Xunit
+                {
+                    public class FactAttribute : System.Attribute { }
+                }
+
+                namespace Example;
+
+                public class Calculator
+                {
+                    public int Add(int a, int b) => a + b;
+                }
+
+                public class CalculatorTests
+                {
+                    [Xunit.Fact]
+                    public void AddWorks() => new Calculator().Add(1, 2);
+
+                    public void Helper() => new Calculator().Add(2, 3);
+                }
+                """));
+
+        var add = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable && node.Name == "Add");
+        var addWorks = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable && node.Name == "AddWorks");
+        var helper = Assert.Single(
+            extracted.Nodes,
+            node => node.Kind == CodeNodeKinds.Callable && node.Name == "Helper");
+
+        var exercised = Assert.Single(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.ExercisedBy && edge.SourceId == add.Id);
+        Assert.Equal(addWorks.Id, exercised.TargetId);
+        Assert.Equal(CodeEvidenceKind.Semantic, exercised.Evidence.Kind);
+        // Plain helper methods are not tests, so they never exercise anything.
+        Assert.DoesNotContain(
+            extracted.Edges,
+            edge => edge.Kind == CodeEdgeKinds.ExercisedBy && edge.TargetId == helper.Id);
+    }
+
+    [Fact]
     public async Task ExtractAsync_EmitsDocRemarksAlongsideSummary()
     {
         var extracted = await ExtractAsync(
@@ -1705,7 +1794,7 @@ public sealed class CSharpCodeGraphPluginTests
         Assert.True(brokenCalls.UnresolvedTargets > 0);
 
         foreach (var unit in units)
-            Assert.Equal(7, unit.Coverage.Count);
+            Assert.Equal(8, unit.Coverage.Count);
     }
 
     [Fact]
@@ -1728,7 +1817,8 @@ public sealed class CSharpCodeGraphPluginTests
                      CodeEdgeKinds.Implements.Value,
                      CodeEdgeKinds.Calls.Value,
                      CodeEdgeKinds.References.Value,
-                     CodeEdgeKinds.Imports.Value
+                     CodeEdgeKinds.Imports.Value,
+                     CodeEdgeKinds.ExercisedBy.Value
                  })
         {
             var entry = unit.Coverage.Single(value => value.RelationshipKind == kind);

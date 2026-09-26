@@ -163,7 +163,8 @@ public sealed partial class CSharpCodeGraphPlugin
                          CodeEdgeKinds.Implements,
                          CodeEdgeKinds.Calls,
                          CodeEdgeKinds.References,
-                         CodeEdgeKinds.Imports
+                         CodeEdgeKinds.Imports,
+                         CodeEdgeKinds.ExercisedBy
                      })
             {
                 var counters = totals.TryGetValue(

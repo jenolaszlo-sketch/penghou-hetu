@@ -6,6 +6,15 @@ releases may still revise public contracts.
 
 ## Unreleased
 
+- Test-to-production mapping: the C# plugin marks projects that reference an
+  exact test-framework package allowlist with a `test-project` property, and
+  derives one bounded `exercised-by` edge from each resolved production target
+  to the allowlisted test method that calls it (new
+  `CodeEdgeKinds.ExercisedBy` and `CodePropertyKeys.TestProject`). External or
+  ambiguous callees still never produce an edge.
+- Extraction-throughput benchmark baseline recorded in `BENCHMARKS.md`
+  (`ExtractionBenchmarks`); the manual benchmark workflow now runs it.
+
 ## 0.2.0-preview.5
 
 Milestone 7.5 (useful semantic relationships) is complete:

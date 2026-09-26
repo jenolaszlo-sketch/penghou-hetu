@@ -29,6 +29,21 @@ public sealed partial class CSharpCodeGraphPlugin
         private readonly Dictionary<string, RelationshipCounters> _counters =
             new(StringComparer.Ordinal);
 
+        private static readonly HashSet<string> TestPackageReferences = new(
+            [
+                "Microsoft.NET.Test.Sdk",
+                "Microsoft.Testing.Platform",
+                "xunit",
+                "xunit.v3",
+                "xunit.runner.visualstudio",
+                "NUnit",
+                "NUnit3TestAdapter",
+                "MSTest.TestFramework",
+                "MSTest.TestAdapter",
+                "TUnit"
+            ],
+            StringComparer.OrdinalIgnoreCase);
+
         public IReadOnlyDictionary<string, RelationshipCounters> Counters => _counters;
 
         public IReadOnlyCollection<string> ContributingSourcePaths => _contributingSources;
@@ -36,6 +51,23 @@ public sealed partial class CSharpCodeGraphPlugin
         public void AddProject()
         {
             var id = ProjectNodeId(project.Path);
+            var properties = new Dictionary<string, CodePropertyValue>
+            {
+                [CodePropertyKeys.Language] = new CodeTextProperty("csharp"),
+                [CodePropertyKeys.AssemblyName] = new CodeTextProperty(project.AssemblyName),
+                [CodePropertyKeys.TargetFramework] = new CodeTextProperty(project.TargetFramework ?? string.Empty),
+                [CodePropertyKeys.Nullable] = new CodeTextProperty(project.Nullable ?? string.Empty),
+                [CodePropertyKeys.ImplicitUsings] = new CodeBooleanProperty(project.ImplicitUsings),
+                [CodePropertyKeys.DefineConstants] = new CodeTextListProperty(project.DefineConstants)
+            };
+            // Test projects are an exact package-reference allowlist. A name
+            // convention or near-miss package is never treated as a test
+            // project, mirroring the test-method attribute allowlist.
+            if (project.PackageReferences.Any(reference =>
+                    TestPackageReferences.Contains(reference.Name)))
+            {
+                properties[CodePropertyKeys.TestProject] = new CodeBooleanProperty(true);
+            }
             _nodes.Add(
                 id.Value,
                 new CodeGraphNode(
@@ -43,15 +75,7 @@ public sealed partial class CSharpCodeGraphPlugin
                     CodeNodeKinds.Project,
                     project.Name,
                     project.Path,
-                    properties: new Dictionary<string, CodePropertyValue>
-                    {
-                        [CodePropertyKeys.Language] = new CodeTextProperty("csharp"),
-                        [CodePropertyKeys.AssemblyName] = new CodeTextProperty(project.AssemblyName),
-                        [CodePropertyKeys.TargetFramework] = new CodeTextProperty(project.TargetFramework ?? string.Empty),
-                        [CodePropertyKeys.Nullable] = new CodeTextProperty(project.Nullable ?? string.Empty),
-                        [CodePropertyKeys.ImplicitUsings] = new CodeBooleanProperty(project.ImplicitUsings),
-                        [CodePropertyKeys.DefineConstants] = new CodeTextListProperty(project.DefineConstants)
-                    }));
+                    properties: properties));
             foreach (var reference in project.ProjectReferences.Where(
                          availableDependencies.Contains))
             {
@@ -182,7 +206,43 @@ public sealed partial class CSharpCodeGraphPlugin
                     }
                 }
             }
+
+            AddExercisedByRelationships();
         }
+
+        /// <summary>
+        /// Derives test-to-production mapping from already-resolved semantic
+        /// calls: every production target called by an allowlisted test method
+        /// gains one bounded <c>exercised-by</c> edge back to that test. Only
+        /// resolved calls are mapped; external or ambiguous callees never
+        /// produce an edge.
+        /// </summary>
+        private void AddExercisedByRelationships()
+        {
+            var exercised = _edges.Values
+                .Where(edge =>
+                    edge.Kind == CodeEdgeKinds.Calls &&
+                    IsTestMethodNode(edge.SourceId))
+                .Select(edge => (
+                    Production: edge.TargetId,
+                    Test: edge.SourceId,
+                    Location: edge.Evidence.Location))
+                .ToArray();
+            foreach (var (production, test, location) in exercised)
+            {
+                AddEdge(
+                    CodeEdgeKinds.ExercisedBy,
+                    production,
+                    test,
+                    location ?? ProjectLocation());
+                CountEmitted(CodeEdgeKinds.ExercisedBy.Value, test);
+            }
+        }
+
+        private bool IsTestMethodNode(CodeNodeId id) =>
+            _nodes.TryGetValue(id.Value, out var node) &&
+            node.Properties.TryGetValue(CodePropertyKeys.TestMethod, out var value) &&
+            value is CodeBooleanProperty { Value: true };
 
         public async ValueTask WriteAsync(
             ICodeGraphSink sink,

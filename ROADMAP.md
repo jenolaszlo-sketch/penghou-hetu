@@ -389,9 +389,12 @@ changes the architectural laws. Effort: S (days), M (weeks), L (longer).
   LatticeDb optional for read-only consumers. `ToJson`/`FromJson` transport
   re-verifies schema, consistency, bounds, and hash; corrupt payloads fail
   explicitly.
-- **Test-to-production mapping (M)** — detect test projects and emit exercised
-  -by relationships once semantic calls land, so impact sets include the tests
-  to run.
+- **Test-to-production mapping (M, landed)** — the C# plugin marks projects
+  referencing an exact test-framework package allowlist with a `test-project`
+  property and derives one bounded `exercised-by` edge from each resolved
+  production target to the allowlisted test method that calls it, so impact
+  sets include the tests to run. Only resolved calls map; externals and
+  ambiguous callees stay unemitted.
 - **Entry-point/route heuristics (M)** — `Main`, controller actions,
   minimal-API endpoints as heuristic-evidence nodes; must respect the
   honest-evidence law.

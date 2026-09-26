@@ -15,6 +15,7 @@ public static class CodePropertyKeys
     public const string Attributes = "attributes";
     public const string Obsolete = "obsolete";
     public const string TestMethod = "test-method";
+    public const string TestProject = "test-project";
     public const string HttpEndpoint = "http-endpoint";
     public const string RouteTemplate = "route-template";
     public const string ConstantValue = "constant-value";
