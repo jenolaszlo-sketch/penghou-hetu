@@ -20,7 +20,11 @@ The central invariant is:
   identities remain distinct.
 - Every fact has an owner. Non-trivial relationships carry honest evidence.
 - Successful graph publication is atomic, idempotent, and consistent with the
-  published source state.
+  published source state. When nothing changed since the latest publication,
+  indexing reuses it instead of minting a run: the returned publication
+  carries the previous run identity, not the requested one. Consumers must
+  key their own per-attempt records by their own run identity and use
+  `IndexIdentity` (content-addressed) to detect identical source states.
 - Persistence and language extraction remain replaceable behind
   provider-neutral contracts.
 - Queries are bounded, deterministic, provenance-aware, and explicit about
