@@ -340,9 +340,10 @@ Exit criteria:
 - the store conformance suite gains relationship-kind checks alongside plugin
   tests — done (`traversal-semantic-kind-filter` on both providers);
 - indexing a repository of Roslyn-solution size completes within the configured
-  per-source and total byte budgets — partially open: bounded chunked batch
-  delivery is proven, but no extraction-throughput benchmark baseline exists
-  yet (store-operation baselines are recorded in `BENCHMARKS.md`).
+  per-source and total byte budgets — bounded chunked batch delivery is proven,
+  and an extraction-throughput baseline now exists
+  (`ExtractionBenchmarks` in `BENCHMARKS.md`, 100 and 1,000 in-memory files);
+  a CI byte-budget assertion still remains open.
 
 ## Feature candidates
 

@@ -11,5 +11,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Penghou.Hetu.LatticeDb\Penghou.Hetu.LatticeDb.csproj" />
+    <ProjectReference Include="..\..\src\Penghou.Hetu.CSharp\Penghou.Hetu.CSharp.csproj" />
   </ItemGroup>
 </Project>

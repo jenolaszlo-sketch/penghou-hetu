@@ -3,13 +3,41 @@
 The reproducible BenchmarkDotNet harness lives in
 `benchmarks/Penghou.Hetu.Benchmarks`. It exercises durable LatticeDB unit
 replacement, exact qualified-name lookup, bounded traversal, deletion plus
-reinsertion, and database reopen.
+reinsertion, database reopen, and bounded C# extraction throughput over
+in-memory sources.
 
 Run the complete matrix in Release mode:
 
 ```powershell
 dotnet run -c Release --project benchmarks/Penghou.Hetu.Benchmarks -- --job short
 ```
+
+Run only the extraction throughput benchmark:
+
+```powershell
+dotnet run -c Release --project benchmarks/Penghou.Hetu.Benchmarks -- --filter "*ExtractionBenchmarks*" --job short
+```
+
+## C# extraction throughput baseline (2026-09-26)
+
+Measured on 2026-09-26 using BenchmarkDotNet v0.15.8, .NET 10.0.11, Windows 11
+(25H2), and an Intel Core Ultra 5 125H, with a short smoke job (`--job short`;
+3 iterations, so the 100-file confidence interval is very wide). Results are
+local engineering baselines, not portable performance guarantees. `ExtractSources`
+compiles and extracts one synthetic in-memory project of small types (one public
+type with a constructor, property, method, and string interpolation per file)
+through the normal `CSharpCodeGraphPlugin` session and a counting sink.
+
+| Operation | 100 files | 1,000 files |
+|---|---:|---:|
+| Extract sources (mean) | 294.8 ms | 1.362 s |
+| Allocated (managed) | 19.37 MB | 175.46 MB |
+
+Allocation scales roughly linearly with source count; extraction cost is
+dominated by per-session Roslyn compilation, not graph materialization. This
+baseline closes the previously open Milestone 7.5 exit criterion that no
+extraction-throughput measurement existed; it does not yet assert a byte budget
+or a Roslyn-solution-size ceiling in CI.
 
 ## LatticeDB schema 1 baseline (2026-09-24, LatticeDbSharp 0.2.0)
 
